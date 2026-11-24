@@ -318,6 +318,8 @@ class SafetyLibraryRead(BaseModel):
     terms: str = ""
     term_count: int = 0
     is_enabled: bool = True
+    is_builtin: bool = False
+    builtin_key: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -374,6 +376,8 @@ class SafetyPolicyRead(BaseModel):
     fail_closed: bool = False
     default_reply: str = ""
     bound_keys: int = 0
+    is_builtin: bool = False
+    builtin_key: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -429,3 +433,17 @@ class SafetyOverview(BaseModel):
     reviews_today: int = 0
     blocked_input_today: int = 0
     blocked_output_today: int = 0
+
+
+class SafetyBuiltinItem(BaseModel):
+    key: str
+    name: str
+    kind: str  # library / policy
+    exists: bool = False
+    modified: bool = False
+
+
+class SafetyBuiltinsRead(BaseModel):
+    version: str = ""
+    installed_version: str = ""
+    items: list[SafetyBuiltinItem] = []

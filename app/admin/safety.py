@@ -12,7 +12,17 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import get_current_admin
 from app.core.models import ApiKey, SafetyLibrary, SafetyPolicy, SafetyReview
+from app.core.safety_bootstrap import (
+    BUILTIN_LIBRARIES,
+    BUILTIN_POLICIES,
+    BUILTIN_VERSION,
+    META_KEY,
+    bootstrap_safety,
+)
+from app.core.models import Meta
 from app.core.schemas import (
+    SafetyBuiltinItem,
+    SafetyBuiltinsRead,
     SafetyLibraryCreate,
     SafetyLibraryRead,
     SafetyLibraryUpdate,
@@ -86,6 +96,8 @@ def _to_library(lib: SafetyLibrary) -> SafetyLibraryRead:
         terms=lib.terms or "",
         term_count=lib.term_count or 0,
         is_enabled=lib.is_enabled,
+        is_builtin=bool(lib.is_builtin),
+        builtin_key=lib.builtin_key or "",
         created_at=lib.created_at,
         updated_at=lib.updated_at,
     )
@@ -115,6 +127,8 @@ def _to_policy(db: Session, p: SafetyPolicy) -> SafetyPolicyRead:
         fail_closed=p.fail_closed,
         default_reply=p.default_reply or safety.DEFAULT_REPLY,
         bound_keys=int(bound),
+        is_builtin=bool(p.is_builtin),
+        builtin_key=p.builtin_key or "",
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
@@ -384,6 +398,78 @@ def delete_policy(
             nxt.is_default = True
             db.commit()
     return None
+
+
+# ---------------------------------------------------------------- 内置模板
+def _builtin_status(db: Session) -> SafetyBuiltinsRead:
+    installed = db.query(Meta).filter(Meta.key == META_KEY).first()
+    lib_rows = {
+        r.builtin_key: r
+        for r in db.query(SafetyLibrary).filter(SafetyLibrary.builtin_key != "").all()
+    }
+    pol_rows = {
+        r.builtin_key: r
+        for r in db.query(SafetyPolicy).filter(SafetyPolicy.builtin_key != "").all()
+    }
+    key_to_id = {k: r.id for k, r in lib_rows.items()}
+    items: list[SafetyBuiltinItem] = []
+
+    for spec in BUILTIN_LIBRARIES:
+        row = lib_rows.get(spec["key"])
+        modified = bool(
+            row
+            and (
+                row.name != spec["name"]
+                or row.description != spec["description"]
+                or row.terms != spec["terms"]
+                or not row.is_enabled
+            )
+        )
+        items.append(SafetyBuiltinItem(
+            key=spec["key"], name=spec["name"], kind="library",
+            exists=row is not None, modified=modified,
+        ))
+    for spec in BUILTIN_POLICIES:
+        row = pol_rows.get(spec["key"])
+        expected = {key_to_id[k] for k in spec["libraries"] if k in key_to_id}
+        modified = bool(
+            row
+            and (
+                row.name != spec["name"]
+                or row.description != spec["description"]
+                or set(row.library_ids or []) != expected
+                or row.input_enabled != spec["input_enabled"]
+                or row.output_enabled != spec["output_enabled"]
+                or row.match_mode != spec["match_mode"]
+                or row.threshold != spec["threshold"]
+                or row.default_reply != spec["default_reply"]
+                or not row.is_enabled
+            )
+        )
+        items.append(SafetyBuiltinItem(
+            key=spec["key"], name=spec["name"], kind="policy",
+            exists=row is not None, modified=modified,
+        ))
+    return SafetyBuiltinsRead(
+        version=BUILTIN_VERSION,
+        installed_version=installed.value if installed else "",
+        items=items,
+    )
+
+
+@router.get("/builtins", response_model=SafetyBuiltinsRead, summary="内置词库与规则状态")
+def get_builtins(db: Session = Depends(get_db), admin: str = Depends(get_current_admin)):
+    return _builtin_status(db)
+
+
+@router.post("/builtins/reinstall", summary="补齐缺失的内置项（不覆盖已有修改）")
+def reinstall_builtins(db: Session = Depends(get_db), admin: str = Depends(get_current_admin)):
+    return bootstrap_safety(db, reinstall=True)
+
+
+@router.post("/builtins/restore", summary="恢复内置项为出厂内容（覆盖内置项修改）")
+def restore_builtins(db: Session = Depends(get_db), admin: str = Depends(get_current_admin)):
+    return bootstrap_safety(db, restore=True)
 
 
 # ---------------------------------------------------------------- 测试与记录

@@ -134,9 +134,10 @@ with client:
     expect(r.status_code == 201, "新建第二套词库成功", r.text)
     lib2 = r.json()
 
-    # 第一条规则自动成为默认规则
+    # 内置基线已占默认位，这里显式抢回默认以延续原有断言场景
     r = client.post("/api/admin/safety/policies", headers=H, json={
         "name": "默认规则",
+        "is_default": True,
         "library_ids": [lib1["id"], lib2["id"]],
         "input_enabled": True,
         "output_enabled": True,
@@ -145,7 +146,7 @@ with client:
     })
     expect(r.status_code == 201, "新建审查规则成功", r.text)
     policy = r.json()
-    expect(policy["is_default"] is True, "第一条规则自动成为默认", json.dumps(policy, ensure_ascii=False))
+    expect(policy["is_default"] is True, "显式设为默认规则成功", json.dumps(policy, ensure_ascii=False))
     expect(len(policy["library_names"]) == 2, "规则引用两套词库", str(policy["library_names"]))
 
     r = client.post("/api/admin/keys", headers=H, json={

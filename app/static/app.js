@@ -1307,10 +1307,11 @@
 
   async function renderSafety() {
     const tab = App.safetyTab || "policies";
-    const [ov, libs, policies] = await Promise.all([
+    const [ov, libs, policies, builtins] = await Promise.all([
       api("/api/admin/safety/overview"),
       api("/api/admin/safety/libraries"),
       api("/api/admin/safety/policies"),
+      api("/api/admin/safety/builtins").catch(() => null),
     ]);
     App.safetyLibraries = libs || [];
     App.safetyPolicies = policies || [];
@@ -1345,6 +1346,24 @@
         <div class="kpi"><div class="label">今日输入拦截</div><div class="value" style="color:var(--err)">${num(ov.blocked_input_today)}</div><div class="hint">未发往上游</div></div>
         <div class="kpi"><div class="label">今日输出拦截</div><div class="value" style="color:var(--warn)">${num(ov.blocked_output_today)}</div><div class="hint">已替换为默认内容</div></div>
       </div>
+      ${builtins ? (() => {
+        const missing = (builtins.items || []).filter((x) => !x.exists).length;
+        const modified = (builtins.items || []).filter((x) => x.modified).length;
+        return `<div class="card" style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+          <div>
+            <b>内置安全模板</b>
+            <span class="tag info">v${esc(builtins.version || "-")}</span>
+            <div class="small muted" style="margin-top:4px">
+              7 套词库 / 4 条规则开箱即用；内置项可像普通词库一样直接编辑。
+              ${missing ? `<span style="color:var(--warn)">缺失 ${missing} 项</span> · ` : ""}${modified ? `<span style="color:var(--warn)">已修改 ${modified} 项</span> · ` : ""}自建数据不会被恢复出厂覆盖。
+            </div>
+          </div>
+          <div class="head-actions">
+            <button class="btn-ghost btn-sm" id="bi-reinstall">补齐缺失</button>
+            <button class="btn-ghost btn-sm" id="bi-restore">恢复出厂</button>
+          </div>
+        </div>`;
+      })() : ""}
       <div class="tabs">
         ${[["policies", "审查规则"], ["libraries", "敏感词库"], ["records", "审查记录"]].map(([k, label]) =>
           `<button data-stab="${k}" class="${tab === k ? "active" : ""}">${label}</button>`).join("")}
@@ -1353,7 +1372,7 @@
     let body = "";
     if (tab === "libraries") {
       const rows = App.safetyLibraries.map((l) => `<tr>
-        <td><b>${esc(l.name)}</b><div class="small muted">${esc(l.description || "")}</div></td>
+        <td><b>${esc(l.name)}</b>${l.is_builtin ? ' <span class="tag info">内置</span>' : ""}<div class="small muted">${esc(l.description || "")}</div></td>
         <td><span class="tag info">${num(l.term_count)} 条</span></td>
         <td>${l.is_enabled ? '<span class="tag ok">启用</span>' : '<span class="tag err">停用</span>'}</td>
         <td class="small muted">${fmtDate(l.updated_at)}</td>
@@ -1421,7 +1440,7 @@
         const libsText = (p.library_ids || []).map((id) => libMap[id] || id).join("、") || '<span class="muted">未引用词库</span>';
         const dirs = [p.input_enabled ? "输入" : "", p.output_enabled ? "输出" : ""].filter(Boolean).join(" + ") || "无";
         return `<tr>
-          <td><b>${esc(p.name)}</b>${p.is_default ? ' <span class="tag info">默认</span>' : ""}<div class="small muted">${esc(p.description || "")}</div></td>
+          <td><b>${esc(p.name)}</b>${p.is_builtin ? ' <span class="tag info">内置</span>' : ""}${p.is_default ? ' <span class="tag ok">默认</span>' : ""}<div class="small muted">${esc(p.description || "")}</div></td>
           <td class="small">${esc(libsText)}</td>
           <td class="small">${esc(dirs)}</td>
           <td class="small">${esc(p.match_mode === "word" ? "词边界" : "子串")} · 阈值 ${num(p.threshold)}</td>
@@ -1442,9 +1461,9 @@
           <div class="field"><span>审查方向</span><select id="test-direction"><option value="input">输入</option><option value="output">输出</option></select></div>
         </div>
         <div class="field"><span>测试文本</span><textarea id="test-text" rows="3" placeholder="粘贴一段文本，检查会命中哪些词"></textarea></div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-primary btn-sm" id="test-run">开始测试</button>
-          <span id="test-result" class="small muted"></span>
+        <div style="display:flex;gap:8px;align-items:flex-start">
+          <button class="btn-primary btn-sm" id="test-run" style="flex:0 0 auto;white-space:nowrap">开始测试</button>
+          <span id="test-result" class="small muted" style="min-width:0;overflow-wrap:anywhere"></span>
         </div>
       </div>
       <div class="card"><div class="table-wrap"><table>
@@ -1460,6 +1479,18 @@
     });
     $("#new-lib").onclick = () => openLibraryForm(null);
     $("#new-policy").onclick = () => openPolicyForm(null);
+    const builtinAction = async (path, tip) => {
+      try {
+        const r = await api("/api/admin/safety/builtins/" + path, "POST", {});
+        toast(`${tip}：词库 ${num(r.libraries)} 项，规则 ${num(r.policies)} 项`);
+        renderSafety();
+      } catch (e) { toast(e.message, "err"); }
+    };
+    if ($("#bi-reinstall")) $("#bi-reinstall").onclick = () => builtinAction("reinstall", "已补齐缺失模板");
+    if ($("#bi-restore")) $("#bi-restore").onclick = async () => {
+      if (!confirm("恢复出厂会覆盖所有内置词库与规则的修改（自建数据不受影响），继续？")) return;
+      await builtinAction("restore", "已恢复出厂模板");
+    };
 
     $$("#content [data-edit-lib]").forEach((b) => {
       b.onclick = () => openLibraryForm(App.safetyLibraries.find((x) => x.id === b.dataset.editLib));
@@ -1530,6 +1561,7 @@
           <textarea name="terms" rows="14" spellcheck="false" placeholder="普通词：直接写&#10;正则：re:你的表达式&#10;注释：# 这行会被忽略">${esc(lib ? lib.terms || "" : "")}</textarea>
         </div>
         <label class="inline"><input type="checkbox" name="is_enabled" ${!lib || lib.is_enabled ? "checked" : ""} /> 启用该词库</label>
+        ${lib && lib.is_builtin ? '<div class="hint-box small">这是内置词库，可直接修改并长期保留；需要还原时到页面顶部点「恢复出厂」。</div>' : ""}
         <div class="hint-box small">词条会做全半角/大小写/零宽字符归一化；正则只作用于归一化后的文本，保存前会校验语法。</div>
       </div>
       <div class="modal-foot">
@@ -1603,6 +1635,7 @@
           <label class="inline"><input type="checkbox" name="normalize" ${!p || p.normalize ? "checked" : ""} /> 归一化（全半角/零宽/大小写）</label>
           <label class="inline"><input type="checkbox" name="case_sensitive" ${p && p.case_sensitive ? "checked" : ""} /> 区分大小写</label>
         </div>
+        ${p && p.is_builtin ? '<div class="hint-box small">这是内置规则，可直接修改并长期保留；需要还原时到页面顶部点「恢复出厂」。</div>' : ""}
         <div class="hint-box small">默认规则用于「继承默认」的 Key；输出审查在流式场景会整段缓冲后再返回，命中时已生成的内容不会发给调用方。</div>
       </div>
       <div class="modal-foot">

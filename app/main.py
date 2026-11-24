@@ -25,6 +25,7 @@ from app.core import registry
 from app.core.admin_store import ensure_admin_seeded
 from app.core.config import ensure_data_dir, resolve_secrets, settings
 from app.core.db import SessionLocal, backfill_channels, ensure_extra_columns, init_db
+from app.core.safety_bootstrap import bootstrap_safety
 from app.core.errors import validation_exception_handler
 from app.core.logretention import cleanup_loop
 
@@ -58,6 +59,8 @@ async def lifespan(app: FastAPI):
     backfill_channels()
     with SessionLocal() as _db:
         ensure_admin_seeded(_db)
+        # 内置词库/规则：只在版本变化或显式调用时补齐，绝不覆盖用户修改
+        bootstrap_safety(_db)
     # 日志详情定期清理：启动即清一次，之后每小时一次（只清空详情，不删统计行）
     stop_cleanup = asyncio.Event()
     cleanup_task = asyncio.create_task(cleanup_loop(stop_cleanup))

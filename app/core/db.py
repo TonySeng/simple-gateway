@@ -69,6 +69,15 @@ def ensure_extra_columns() -> None:
             # 上游超时（秒）；NULL = 使用全局默认
             ("timeout_s", "FLOAT"),
         ],
+        "safety_libraries": [
+            # 内置词库标记：内置项与自建项一样可编辑，仅用于来源识别与恢复出厂
+            ("is_builtin", "BOOLEAN DEFAULT FALSE"),
+            ("builtin_key", "VARCHAR(64) DEFAULT ''"),
+        ],
+        "safety_policies": [
+            ("is_builtin", "BOOLEAN DEFAULT FALSE"),
+            ("builtin_key", "VARCHAR(64) DEFAULT ''"),
+        ],
         "request_logs": [
             # 失败归因：分类 / 上游真实状态码 / 上游响应体 / 上游地址 / 请求标识
             ("error_type", "VARCHAR(48) DEFAULT ''"),
@@ -101,9 +110,16 @@ def ensure_extra_columns() -> None:
             ("ix_request_logs_request_id", "CREATE INDEX IF NOT EXISTS ix_request_logs_request_id ON request_logs (request_id)"),
             ("ix_request_logs_safety_result", "CREATE INDEX IF NOT EXISTS ix_request_logs_safety_result ON request_logs (safety_result)"),
             ("ix_api_keys_safety_policy_id", "CREATE INDEX IF NOT EXISTS ix_api_keys_safety_policy_id ON api_keys (safety_policy_id)"),
+            ("ix_safety_libraries_builtin_key", "CREATE INDEX IF NOT EXISTS ix_safety_libraries_builtin_key ON safety_libraries (builtin_key)"),
+            ("ix_safety_policies_builtin_key", "CREATE INDEX IF NOT EXISTS ix_safety_policies_builtin_key ON safety_policies (builtin_key)"),
         ):
             try:
-                table = "api_keys" if "api_keys" in ddl else "request_logs"
+                table = (
+                    "api_keys" if "api_keys" in ddl
+                    else "safety_libraries" if "safety_libraries" in ddl
+                    else "safety_policies" if "safety_policies" in ddl
+                    else "request_logs"
+                )
                 if insp.has_table(table):
                     conn.execute(text(ddl))
             except Exception as e:  # 索引失败不影响功能

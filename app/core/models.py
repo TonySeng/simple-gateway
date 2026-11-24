@@ -233,6 +233,9 @@ class SafetyLibrary(Base):
     terms: Mapped[str] = mapped_column(Text, default="")
     term_count: Mapped[int] = mapped_column(Integer, default=0)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 系统内置项标记：内置项同样可以在后台自由修改/停用/删除
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    builtin_key: Mapped[str] = mapped_column(String(64), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, server_default=func.now()
@@ -269,6 +272,9 @@ class SafetyPolicy(Base):
     default_reply: Mapped[str] = mapped_column(
         Text, default="抱歉，该内容未通过安全审查，无法为您生成回复。"
     )
+    # 系统内置项标记；builtin_key 用于在版本升级/恢复出厂时定位同一条规则
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    builtin_key: Mapped[str] = mapped_column(String(64), default="", index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
