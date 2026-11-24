@@ -1,0 +1,57 @@
+# Simple Gateway —— 服务器端部署 compose（使用本地导出的镜像，不 build）
+# 用法： docker compose -f docker-compose.server.yml up -d
+# 数据：PostgreSQL 在 postgres-data 卷；运行时密钥在 gateway-data 卷（迁移包已注入 .secrets.json）
+name: simple-gateway
+
+services:
+  gateway:
+    image: simple-gateway:latest
+    container_name: simple-gateway
+    restart: unless-stopped
+    ports:
+      - "8020:8000"
+    environment:
+      SG_APP_NAME: "Simple Gateway"
+      SG_HOST: "0.0.0.0"
+      SG_PORT: "8000"
+      SG_DATABASE_URL: "postgresql+psycopg://sg:sgpass@postgres:5432/sgateway"
+      SG_ADMIN_AUTH_ENABLED: "true"
+      SG_ADMIN_USERNAME: "admin"
+      # 仅在「空库首次初始化」时用于播种管理员口令一次；已有数据时以库内哈希为准，
+      # 因此迁移到服务器后口令仍是本地那一个（不会被重置成 admin123）。
+      SG_ADMIN_PASSWORD: "${SG_ADMIN_PASSWORD:-admin123}"
+      # 密钥固定读数据卷内 .secrets.json，避免切 PG 后路径退化导致凭证解不开
+      SG_SECRETS_FILE: "/app/data/.secrets.json"
+      SG_PROXY_TIMEOUT: "120"
+    volumes:
+      - gateway-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: simple-gateway-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sg
+      POSTGRES_PASSWORD: sgpass
+      POSTGRES_DB: sgateway
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sg -d sgateway || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  gateway-data:
+  postgres-data:

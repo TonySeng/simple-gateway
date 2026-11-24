@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Simple Gateway · 统一中转网关</title>
+  <link rel="stylesheet" href="/admin/style.css?v=20261124" />
+</head>
+<body>
+  <!-- 登录 -->
+  <div id="login-view" class="login-wrap hidden">
+    <form id="login-form" class="login-card">
+      <h1>Simple Gateway</h1>
+      <p class="sub">统一 AI 能力中转网关 · 管理后台</p>
+      <label>用户名<input name="username" autocomplete="username" required /></label>
+      <label>密码<input name="password" type="password" autocomplete="current-password" required /></label>
+      <button class="btn-primary" type="submit">登录</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="main-view" class="shell hidden">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">SG</div>
+        <div>
+          <div class="name">Simple Gateway</div>
+          <div class="ver" id="brand-ver">统一中转网关</div>
+        </div>
+      </div>
+      <nav class="menu" id="nav">
+        <a href="#/dashboard" data-route="dashboard"><i class="dot"></i>仪表盘</a>
+        <a href="#/providers" data-route="providers"><i class="dot"></i>服务与提供商</a>
+        <a href="#/keys" data-route="keys"><i class="dot"></i>API Key</a>
+        <a href="#/live" data-route="live"><i class="dot"></i>实时监控</a>
+        <a href="#/safety" data-route="safety"><i class="dot"></i>安全审查</a>
+        <a href="#/logs" data-route="logs"><i class="dot"></i>用量与日志</a>
+        <a href="#/docs" data-route="docs"><i class="dot"></i>接入说明</a>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="me-name">-</span>
+        <div class="foot-actions">
+          <button class="link" id="change-pwd-btn">修改密码</button>
+          <button class="link" id="logout-btn">退出</button>
+        </div>
+      </div>
+    </aside>
+    <main class="content" id="content"></main>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="/admin/app.js?v=20261124b"></script>
+</body>
+</html>

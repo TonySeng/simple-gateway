@@ -1,0 +1,6 @@
+# 仅用于镜像源不可用时的本地重建：复用已装好依赖的镜像作基础层
+FROM simple-gateway:base20261109
+WORKDIR /app
+COPY app ./app
+COPY run.py ./run.py
+COPY tools ./tools

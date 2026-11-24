@@ -1,0 +1,29 @@
+# 运行环境 / 缓存
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# 数据与密钥：绝不入库
+data/
+backups/
+migration-export/
+.env
+.env.*
+!.env.example
+.secrets.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sql
+*.pem
+*.key
+
+# 截图与本地归档
+shots/
+*.tar
+*.tgz
+
+# 本机工作台记录
+.workbuddy/
