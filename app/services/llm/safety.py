@@ -40,12 +40,26 @@ DEFAULT_REPLY = "抱歉，该内容未通过安全审查，无法为您生成回
 RESULT_PASSED = "passed"
 RESULT_BLOCKED_INPUT = "blocked_input"
 RESULT_BLOCKED_OUTPUT = "blocked_output"
+RESULT_SANITIZED_INPUT = "sanitized_input"
+RESULT_SANITIZED_OUTPUT = "sanitized_output"
+RESULT_REVIEW_INPUT = "review_input"
+RESULT_REVIEW_OUTPUT = "review_output"
 RESULT_BLOCKED_OVERFLOW = "blocked_overflow"
 RESULT_ERROR = "error"
 RESULT_SKIPPED = "skipped"
 
 DIRECTION_INPUT = "input"
 DIRECTION_OUTPUT = "output"
+
+# 命中后的处理动作（规则引用多个词库时取最严：block > sanitize > review）
+ACTION_BLOCK = "block"        # 拦截，直接返回默认回复
+ACTION_SANITIZE = "sanitize"  # 脱敏：把命中片段替换为掩码后继续
+ACTION_REVIEW = "review"      # 放行但标记待人工复核
+ACTION_PASS = "pass"          # 未命中
+
+_ACTION_RANK = {ACTION_BLOCK: 3, ACTION_SANITIZE: 2, ACTION_REVIEW: 1, ACTION_PASS: 0}
+_RISK_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+MASK = "***"
 
 # 词库/规则的编译缓存：后台保存时主动失效；TTL 只作为多进程场景的兜底。
 _CACHE_TTL_S = 5.0
@@ -54,6 +68,9 @@ _term_cache: dict[str, tuple[float, list["CompiledTerm"], list[str]]] = {}
 
 _ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff]")
 _WS = re.compile(r"\s+")
+# 拆字绕过时可能插入的「轻分隔符」：空白、点、短横、下划线、间隔号、零宽字符。
+# 刻意不含句号/逗号/顿号，否则「中毒。品质」会被误判成「毒品」。
+_OBF_SEP = r"\s\.\-_·•*\u200b\u200c\u200d\ufeff"
 
 
 @dataclass
@@ -61,6 +78,8 @@ class CompiledTerm:
     term: str
     library: str
     pattern: re.Pattern | None = None
+    risk_level: str = "medium"
+    hit_action: str = ACTION_BLOCK
 
 
 @dataclass
@@ -71,6 +90,12 @@ class ReviewResult:
     truncated: bool = False
     detail: str = ""
     error: str = ""
+    action: str = ACTION_PASS
+    risk_level: str = ""
+    # 命中词条（含正则与动作），供调用方做脱敏
+    hit_terms: list["CompiledTerm"] = field(default_factory=list)
+    # 脱敏后的文本（仅 action=sanitize 且调用方提供原文时填充，按 texts 顺序）
+    sanitized: list[str] = field(default_factory=list)
 
     @property
     def library_names(self) -> list[str]:
@@ -80,6 +105,23 @@ class ReviewResult:
             if name and name not in names:
                 names.append(name)
         return names
+
+
+def worst_action(actions: list[str]) -> str:
+    """取最严动作；空列表视为 pass。"""
+    best = ACTION_PASS
+    for a in actions:
+        if _ACTION_RANK.get(a, 0) > _ACTION_RANK.get(best, 0):
+            best = a
+    return best
+
+
+def highest_risk(levels: list[str]) -> str:
+    best = ""
+    for lv in levels:
+        if _RISK_RANK.get(lv, 0) > _RISK_RANK.get(best, 0):
+            best = lv
+    return best
 
 
 def invalidate_cache(policy_id: str | None = None) -> None:
@@ -119,7 +161,38 @@ def resolve_policy(db: Session, api_key: ApiKey) -> SafetyPolicy | None:
     )
 
 
-def _compile_library(name: str, terms: str, policy: SafetyPolicy) -> list[CompiledTerm]:
+_OBF_SEP_RE = re.compile(f"[{_OBF_SEP}]+")
+_OBF_SEP_CHAR = re.compile(f"[{_OBF_SEP}]")
+
+
+def _compact(text: str) -> str:
+    """去掉轻分隔符后的紧凑文本（仅用于拆字识别）。"""
+    return _OBF_SEP_RE.sub("", text or "")
+
+
+def _obfuscation_pattern(term: str) -> re.Pattern | None:
+    """为词条构造「允许字间插入轻分隔符」的正则，用于识别拆字绕过。
+
+    例：``毒品`` → ``毒[空格/点/短横]{0,3}品``，可命中「毒 品」「毒-品」「毒.品」「毒·品」。
+    只允许最多 3 个轻分隔符、且不含句读标点，以控制误伤（避免「中毒。品质」误判）。
+    仅用于长度 2-12 的词条，避免对长句构造出巨大正则。
+    """
+    if not (2 <= len(term) <= 12):
+        return None
+    parts = [re.escape(ch) for ch in term]
+    body = f"[{_OBF_SEP}]{{0,3}}".join(parts)
+    try:
+        return re.compile(body)
+    except re.error:
+        return None
+
+
+def _compile_library(name: str, terms: str, policy: SafetyPolicy, lib: SafetyLibrary) -> list[CompiledTerm]:
+    risk = (getattr(lib, "risk_level", "") or "medium").lower()
+    action = (getattr(lib, "hit_action", "") or ACTION_BLOCK).lower()
+    if action not in _ACTION_RANK:
+        action = ACTION_BLOCK
+    aggressive = bool(getattr(policy, "aggressive_normalize", False))
     out: list[CompiledTerm] = []
     for raw in (terms or "").splitlines():
         line = raw.strip()
@@ -134,14 +207,17 @@ def _compile_library(name: str, terms: str, policy: SafetyPolicy) -> list[Compil
                 continue
             flags = 0 if policy.case_sensitive else re.IGNORECASE
             try:
-                out.append(CompiledTerm(line, name, re.compile(pattern_text, flags)))
+                out.append(CompiledTerm(line, name, re.compile(pattern_text, flags), risk, action))
             except re.error as e:
                 # 坏正则不能拖垮整条规则；后台保存时会先校验，这里只兜底。
                 logger.warning("词库 %s 的正则无效，已跳过：%s（%s）", name, pattern_text, e)
             continue
         term = _normalize(line, policy)
-        if term:
-            out.append(CompiledTerm(term, name))
+        if not term:
+            continue
+        # 拆字识别：开启深度归一化时，为词条额外编译「字间可插分隔符」的正则
+        pat = _obfuscation_pattern(term) if aggressive else None
+        out.append(CompiledTerm(term, name, pat, risk, action))
     return out
 
 
@@ -163,7 +239,7 @@ def _load_terms(db: Session, policy: SafetyPolicy) -> tuple[list[CompiledTerm], 
     names: list[str] = []
     for lib in libs:
         names.append(lib.name)
-        compiled.extend(_compile_library(lib.name, lib.terms, policy))
+        compiled.extend(_compile_library(lib.name, lib.terms, policy, lib))
     _term_cache[policy.id] = (now + _CACHE_TTL_S, compiled, names)
     return compiled, names
 
@@ -180,9 +256,11 @@ def _normalize(text: str, policy: SafetyPolicy) -> str:
     return s
 
 
-def _match_one(text: str, term: CompiledTerm, policy: SafetyPolicy) -> bool:
+def _match_one(text: str, term: CompiledTerm, policy: SafetyPolicy, compact: str = "") -> bool:
     if term.pattern is not None:
-        return term.pattern.search(text) is not None
+        return term.pattern.search(text) is not None or (
+            bool(compact) and term.pattern.search(compact) is not None
+        )
     if policy.match_mode == "word" and re.fullmatch(r"[A-Za-z0-9_\-]+", term.term):
         # 拉丁词按词边界匹配，避免 "kill" 命中 "skill"；中文仍按子串。
         pat = r"(?<![A-Za-z0-9_])" + re.escape(term.term) + r"(?![A-Za-z0-9_])"
@@ -224,26 +302,113 @@ def review_texts(
     truncated = len(raw) > limit
     clipped = raw[:limit]
     normalized = _normalize(clipped, policy)
+    compact = _compact(normalized) if getattr(policy, "aggressive_normalize", False) else ""
 
     compiled, _lib_names = _load_terms(db, policy)
     matched: list[dict[str, str]] = []
     seen: set[str] = set()
+    hit_terms: list[CompiledTerm] = []
     for term in compiled:
-        if _match_one(normalized, term, policy):
+        if _match_one(normalized, term, policy, compact):
             if term.term in seen:
                 continue
             seen.add(term.term)
-            matched.append({"term": term.term, "library": term.library})
+            hit_terms.append(term)
+            matched.append({
+                "term": term.term,
+                "library": term.library,
+                "risk_level": term.risk_level,
+                "action": term.hit_action,
+            })
 
     threshold = max(1, int(policy.threshold or 1))
-    blocked = len(matched) >= threshold
-    return ReviewResult(
+    # 达到阈值才生效；未达阈值视为通过（避免「命中 1 个但要求 ≥2」时误处置）
+    if len(matched) < threshold:
+        return ReviewResult(
+            matched=matched,
+            excerpt=clipped[:2000],
+            truncated=truncated,
+        )
+
+    action = worst_action([t.hit_action for t in hit_terms])
+    risk = highest_risk([t.risk_level for t in hit_terms])
+    blocked = action == ACTION_BLOCK
+    result = ReviewResult(
         blocked=blocked,
         matched=matched,
         excerpt=clipped[:2000],
         truncated=truncated,
-        detail=_build_detail(matched, threshold) if blocked else "",
+        detail=_build_detail(matched, threshold) if action != ACTION_PASS else "",
+        action=action,
+        risk_level=risk,
+        hit_terms=hit_terms,
     )
+    if action == ACTION_SANITIZE:
+        result.sanitized = [_sanitize_text(t, hit_terms) for t in texts]
+    return result
+
+
+def sanitize_obj(obj: Any, hit_terms: list["CompiledTerm"]) -> Any:
+    """递归把 JSON 结构中的字符串按命中词条脱敏，返回新对象（不改原对象）。"""
+    if not hit_terms:
+        return obj
+    if isinstance(obj, str):
+        return _sanitize_text(obj, hit_terms)
+    if isinstance(obj, list):
+        return [sanitize_obj(x, hit_terms) for x in obj]
+    if isinstance(obj, dict):
+        return {k: sanitize_obj(v, hit_terms) for k, v in obj.items()}
+    return obj
+
+
+def _mask_via_compact(text: str, pattern: re.Pattern) -> str:
+    """正则只在紧凑文本上命中时（拆字绕过），把命中区间映射回原文再替换。"""
+    kept: list[str] = []
+    pos: list[int] = []  # 紧凑文本每个字符对应的原文下标
+    for i, ch in enumerate(text):
+        if _OBF_SEP_CHAR.fullmatch(ch):
+            continue
+        kept.append(ch)
+        pos.append(i)
+    compact = "".join(kept)
+    spans: list[tuple[int, int]] = []
+    for m in pattern.finditer(compact):
+        if m.start() >= len(pos) or m.end() - 1 >= len(pos):
+            continue
+        spans.append((pos[m.start()], pos[m.end() - 1] + 1))
+    if not spans:
+        return text
+    # 合并重叠区间后从后往前替换，避免下标错位
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    out = text
+    for s, e in reversed(merged):
+        out = out[:s] + MASK + out[e:]
+    return out
+
+
+def _sanitize_text(text: str, hit_terms: list[CompiledTerm]) -> str:
+    """把命中片段替换为掩码。
+
+    普通词条用「字间容忍轻分隔符」的同一正则替换，因此「毒 品」「毒-品」会整体掩掉；
+    正则词条先直接替换，落空时用紧凑文本区间映射兜底（覆盖拆字号码等场景）。
+    """
+    if not text:
+        return text
+    out = text
+    for term in hit_terms:
+        if term.pattern is not None:
+            new = term.pattern.sub(MASK, out)
+            out = new if new != out else _mask_via_compact(out, term.pattern)
+        else:
+            pat = _obfuscation_pattern(term.term) or re.compile(re.escape(term.term))
+            out = pat.sub(MASK, out)
+    return out
 
 
 # ---------------------------------------------------------------- 文本抽取

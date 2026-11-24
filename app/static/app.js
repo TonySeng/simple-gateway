@@ -1281,15 +1281,44 @@
   /* ===================== 安全审查 ===================== */
   const SAFETY_ACTIONS = {
     blocked: ["拦截", "err"],
+    sanitized: ["脱敏", "info"],
+    review: ["待复核", "warn"],
     error: ["审查异常", "warn"],
     overflow: ["超限拦截", "warn"],
   };
+
+  const SAFETY_RISK = {
+    low: ["低", "ok"],
+    medium: ["中", "info"],
+    high: ["高", "warn"],
+    critical: ["严重", "err"],
+  };
+
+  const SAFETY_HIT_ACTION = {
+    block: ["拦截", "err"],
+    sanitize: ["脱敏", "info"],
+    review: ["复核", "warn"],
+  };
+
+  function safetyRiskTag(level) {
+    const [label, tone] = SAFETY_RISK[level] || SAFETY_RISK.medium;
+    return `<span class="tag ${tone}">风险 ${label}</span>`;
+  }
+
+  function safetyActionTag(action) {
+    const [label, tone] = SAFETY_HIT_ACTION[action] || SAFETY_HIT_ACTION.block;
+    return `<span class="tag ${tone}">${label}</span>`;
+  }
 
   function safetyResultTag(result) {
     if (!result) return '<span class="muted small">—</span>';
     if (result === "passed") return '<span class="tag ok">通过</span>';
     if (result === "blocked_input") return '<span class="tag err">输入拦截</span>';
     if (result === "blocked_output") return '<span class="tag err">输出拦截</span>';
+    if (result === "sanitized_input") return '<span class="tag info">输入脱敏</span>';
+    if (result === "sanitized_output") return '<span class="tag info">输出脱敏</span>';
+    if (result === "review_input") return '<span class="tag warn">输入待复核</span>';
+    if (result === "review_output") return '<span class="tag warn">输出待复核</span>';
     if (result === "blocked_overflow") return '<span class="tag warn">超限拦截</span>';
     if (result === "error") return '<span class="tag warn">审查异常</span>';
     if (result === "skipped") return '<span class="tag">未审查</span>';
@@ -1374,6 +1403,7 @@
       const rows = App.safetyLibraries.map((l) => `<tr>
         <td><b>${esc(l.name)}</b>${l.is_builtin ? ' <span class="tag info">内置</span>' : ""}<div class="small muted">${esc(l.description || "")}</div></td>
         <td><span class="tag info">${num(l.term_count)} 条</span></td>
+        <td>${safetyRiskTag(l.risk_level)} ${safetyActionTag(l.hit_action)}</td>
         <td>${l.is_enabled ? '<span class="tag ok">启用</span>' : '<span class="tag err">停用</span>'}</td>
         <td class="small muted">${fmtDate(l.updated_at)}</td>
         <td class="nowrap">
@@ -1382,8 +1412,8 @@
         </td>
       </tr>`).join("");
       body = `<div class="card"><div class="table-wrap"><table>
-        <thead><tr><th>词库</th><th>词条</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5" class="muted small">还没有词库，先新建一套敏感词</td></tr>'}</tbody>
+        <thead><tr><th>词库</th><th>词条</th><th>风险 / 动作</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="muted small">还没有词库，先新建一套敏感词</td></tr>'}</tbody>
       </table></div></div>`;
     } else if (tab === "records") {
       const f = App.safetyRecords.filters;
@@ -1408,6 +1438,8 @@
           <select id="sr-action" style="width:130px">
             <option value="">全部动作</option>
             <option value="blocked" ${f.action === "blocked" ? "selected" : ""}>拦截</option>
+            <option value="sanitized" ${f.action === "sanitized" ? "selected" : ""}>脱敏</option>
+            <option value="review" ${f.action === "review" ? "selected" : ""}>待复核</option>
             <option value="error" ${f.action === "error" ? "selected" : ""}>审查异常</option>
             <option value="overflow" ${f.action === "overflow" ? "selected" : ""}>超限拦截</option>
           </select>
@@ -1561,6 +1593,22 @@
           <textarea name="terms" rows="14" spellcheck="false" placeholder="普通词：直接写&#10;正则：re:你的表达式&#10;注释：# 这行会被忽略">${esc(lib ? lib.terms || "" : "")}</textarea>
         </div>
         <label class="inline"><input type="checkbox" name="is_enabled" ${!lib || lib.is_enabled ? "checked" : ""} /> 启用该词库</label>
+        <div class="form-row">
+          <div class="field"><span>风险等级</span>
+            <select name="risk_level">
+              ${[["low","低"],["medium","中"],["high","高"],["critical","严重"]].map(([v,t]) =>
+                `<option value="${v}" ${((lib && lib.risk_level) || "medium") === v ? "selected" : ""}>${t}（${v}）</option>`).join("")}
+            </select>
+          </div>
+          <div class="field"><span>命中动作</span>
+            <select name="hit_action">
+              <option value="block" ${!lib || lib.hit_action === "block" ? "selected" : ""}>拦截（返回默认回复）</option>
+              <option value="sanitize" ${lib && lib.hit_action === "sanitize" ? "selected" : ""}>脱敏（替换为 *** 后放行）</option>
+              <option value="review" ${lib && lib.hit_action === "review" ? "selected" : ""}>复核（放行并标记待审）</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint-box small">一条规则引用多个词库时按最严动作汇总：拦截 &gt; 脱敏 &gt; 复核。涉未成年色情等零容忍词库应保持「拦截」。</div>
         ${lib && lib.is_builtin ? '<div class="hint-box small">这是内置词库，可直接修改并长期保留；需要还原时到页面顶部点「恢复出厂」。</div>' : ""}
         <div class="hint-box small">词条会做全半角/大小写/零宽字符归一化；正则只作用于归一化后的文本，保存前会校验语法。</div>
       </div>
@@ -1578,6 +1626,8 @@
         description: val("description").trim(),
         terms: val("terms"),
         is_enabled: root.querySelector('[name="is_enabled"]').checked,
+        risk_level: val("risk_level"),
+        hit_action: val("hit_action"),
       };
       if (!payload.name) { toast("名称不能为空", "err"); return; }
       try {
@@ -1633,6 +1683,7 @@
           <label class="inline"><input type="checkbox" name="is_enabled" ${!p || p.is_enabled ? "checked" : ""} /> 启用规则</label>
           <label class="inline"><input type="checkbox" name="is_default" ${p && p.is_default ? "checked" : ""} /> 设为默认规则</label>
           <label class="inline"><input type="checkbox" name="normalize" ${!p || p.normalize ? "checked" : ""} /> 归一化（全半角/零宽/大小写）</label>
+          <label class="inline"><input type="checkbox" name="aggressive_normalize" ${p && p.aggressive_normalize ? "checked" : ""} /> 拆字识别（毒 品 / 毒-品）</label>
           <label class="inline"><input type="checkbox" name="case_sensitive" ${p && p.case_sensitive ? "checked" : ""} /> 区分大小写</label>
         </div>
         ${p && p.is_builtin ? '<div class="hint-box small">这是内置规则，可直接修改并长期保留；需要还原时到页面顶部点「恢复出厂」。</div>' : ""}
@@ -1665,6 +1716,7 @@
         is_enabled: checked("is_enabled"),
         is_default: checked("is_default"),
         normalize: checked("normalize"),
+        aggressive_normalize: checked("aggressive_normalize"),
         case_sensitive: checked("case_sensitive"),
       };
       if (!payload.name) { toast("规则名称不能为空", "err"); return; }

@@ -73,10 +73,15 @@ def ensure_extra_columns() -> None:
             # 内置词库标记：内置项与自建项一样可编辑，仅用于来源识别与恢复出厂
             ("is_builtin", "BOOLEAN DEFAULT FALSE"),
             ("builtin_key", "VARCHAR(64) DEFAULT ''"),
+            # 风险分级与命中动作：存量数据默认 medium/block，保持原「命中即拦截」行为
+            ("risk_level", "VARCHAR(16) DEFAULT 'medium'"),
+            ("hit_action", "VARCHAR(16) DEFAULT 'block'"),
         ],
         "safety_policies": [
             ("is_builtin", "BOOLEAN DEFAULT FALSE"),
             ("builtin_key", "VARCHAR(64) DEFAULT ''"),
+            # 深度归一化（拆字识别）开关
+            ("aggressive_normalize", "BOOLEAN DEFAULT FALSE"),
         ],
         "request_logs": [
             # 失败归因：分类 / 上游真实状态码 / 上游响应体 / 上游地址 / 请求标识

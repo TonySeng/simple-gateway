@@ -406,7 +406,30 @@ async def handle_chat(protocol: str, api_key: ApiKey, request: Request, client_i
                             protocol, model.name, reply, rid, stream,
                             safety.RESULT_BLOCKED_INPUT,
                         )
-                    input_safety_result = safety.RESULT_PASSED
+                    if sres.action == safety.ACTION_SANITIZE:
+                        # 脱敏后继续：把请求体里的命中片段替换为掩码再发往上游
+                        internal = safety.sanitize_obj(internal, sres.hit_terms)
+                        safety.record_review(
+                            db, request_id=rid, key=api_key, policy=safety_policy,
+                            direction=safety.DIRECTION_INPUT, action="sanitized",
+                            result=sres, model=model.name, endpoint=(
+                                "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+                            ),
+                        )
+                        input_safety_result = safety.RESULT_SANITIZED_INPUT
+                        input_safety_detail = sres.detail
+                    elif sres.action == safety.ACTION_REVIEW:
+                        safety.record_review(
+                            db, request_id=rid, key=api_key, policy=safety_policy,
+                            direction=safety.DIRECTION_INPUT, action="review",
+                            result=sres, model=model.name, endpoint=(
+                                "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+                            ),
+                        )
+                        input_safety_result = safety.RESULT_REVIEW_INPUT
+                        input_safety_detail = sres.detail
+                    else:
+                        input_safety_result = safety.RESULT_PASSED
                 else:
                     input_safety_result = safety.RESULT_SKIPPED
             except Exception as e:  # noqa: BLE001
@@ -569,7 +592,31 @@ async def _nonstream_response(
                         "X-Safety-Review": safety.RESULT_BLOCKED_OUTPUT,
                     },
                 )
-            if safety_result != safety.RESULT_ERROR:
+            if sres.action == safety.ACTION_SANITIZE:
+                # 脱敏后放行：把上游响应里的命中片段替换为掩码再返回客户端
+                up = safety.sanitize_obj(up, sres.hit_terms)
+                up_text = json.dumps(up, ensure_ascii=False)
+                safety.record_review(
+                    db, request_id=request_id, key=api_key, policy=safety_policy,
+                    direction=safety.DIRECTION_OUTPUT, action="sanitized", result=sres,
+                    model=model.name, endpoint=(
+                        "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+                    ),
+                )
+                safety_result = safety.RESULT_SANITIZED_OUTPUT
+                safety_detail = sres.detail
+            elif sres.action == safety.ACTION_REVIEW:
+                safety.record_review(
+                    db, request_id=request_id, key=api_key, policy=safety_policy,
+                    direction=safety.DIRECTION_OUTPUT, action="review", result=sres,
+                    model=model.name, endpoint=(
+                        "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+                    ),
+                )
+                safety_result = safety.RESULT_REVIEW_OUTPUT
+                safety_detail = sres.detail
+            elif safety_result in ("", safety.RESULT_PASSED, safety.RESULT_SKIPPED):
+                # 不把输入阶段已记录的「脱敏/复核」降级成 passed
                 safety_result = safety.RESULT_PASSED
         except Exception as e:  # noqa: BLE001
             logger.exception("输出安全审查异常 rid=%s（已忽略）", request_id)
@@ -914,8 +961,49 @@ async def _stream_response(
                                 {"prompt_tokens": tokens_in, "completion_tokens": tokens_out},
                             ):
                                 yield s
+                        elif sres.action == safety.ACTION_SANITIZE:
+                            # 流式脱敏：已发出的增量无法回收，改为丢弃原缓冲，
+                            # 用脱敏后的整段文本重发一个合法 SSE 流。
+                            sanitized_text = safety.sanitize_obj(
+                                "".join(assistant_text), sres.hit_terms
+                            )
+                            safety_result = safety.RESULT_SANITIZED_OUTPUT
+                            safety_detail = sres.detail
+                            safety.record_review(
+                                sdb, request_id=request_id, key=api_key, policy=safety_policy,
+                                direction=safety.DIRECTION_OUTPUT, action="sanitized",
+                                result=sres, model=model.name,
+                                endpoint=("/v1/messages" if protocol == "anthropic"
+                                          else "/v1/chat/completions"),
+                                is_stream=True,
+                            )
+                            sdb.commit()
+                            buffered.clear()
+                            saw_data = True
+                            # 复用默认回复的 SSE 结构承载脱敏文本（仅内容不同）
+                            for s in safety.blocked_stream(
+                                protocol, model.name, sanitized_text, request_id,
+                                {"prompt_tokens": tokens_in, "completion_tokens": tokens_out},
+                            ):
+                                yield s
+                        elif sres.action == safety.ACTION_REVIEW:
+                            safety_result = safety.RESULT_REVIEW_OUTPUT
+                            safety_detail = sres.detail
+                            safety.record_review(
+                                sdb, request_id=request_id, key=api_key, policy=safety_policy,
+                                direction=safety.DIRECTION_OUTPUT, action="review",
+                                result=sres, model=model.name,
+                                endpoint=("/v1/messages" if protocol == "anthropic"
+                                          else "/v1/chat/completions"),
+                                is_stream=True,
+                            )
+                            sdb.commit()
+                            for s in buffered:
+                                yield s
+                            buffered.clear()
                         else:
-                            if safety_result != safety.RESULT_ERROR:
+                            if safety_result in ("", safety.RESULT_PASSED, safety.RESULT_SKIPPED):
+                                # 不把输入阶段的「脱敏/复核」标记降级成 passed
                                 safety_result = safety.RESULT_PASSED
                             for s in buffered:
                                 yield s

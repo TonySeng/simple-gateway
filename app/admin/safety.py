@@ -42,6 +42,29 @@ router = APIRouter(prefix="/api/admin/safety", tags=["安全审查"])
 MAX_TERMS = 10000
 MAX_REGEX_LEN = 500
 
+RISK_LEVELS = ("low", "medium", "high", "critical")
+HIT_ACTIONS = ("block", "sanitize", "review")
+
+
+def _validate_risk(risk_level: str) -> str:
+    value = (risk_level or "medium").strip().lower()
+    if value not in RISK_LEVELS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"risk_level 只能是 {' / '.join(RISK_LEVELS)}",
+        )
+    return value
+
+
+def _validate_action(action: str) -> str:
+    value = (action or "block").strip().lower()
+    if value not in HIT_ACTIONS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"hit_action 只能是 {' / '.join(HIT_ACTIONS)}",
+        )
+    return value
+
 
 def _today_utc() -> datetime:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -96,6 +119,8 @@ def _to_library(lib: SafetyLibrary) -> SafetyLibraryRead:
         terms=lib.terms or "",
         term_count=lib.term_count or 0,
         is_enabled=lib.is_enabled,
+        risk_level=lib.risk_level or "medium",
+        hit_action=lib.hit_action or "block",
         is_builtin=bool(lib.is_builtin),
         builtin_key=lib.builtin_key or "",
         created_at=lib.created_at,
@@ -122,6 +147,7 @@ def _to_policy(db: Session, p: SafetyPolicy) -> SafetyPolicyRead:
         match_mode=p.match_mode or "contains",
         case_sensitive=p.case_sensitive,
         normalize=p.normalize,
+        aggressive_normalize=bool(getattr(p, "aggressive_normalize", False)),
         threshold=p.threshold or 1,
         max_text_chars=p.max_text_chars or 200000,
         fail_closed=p.fail_closed,
@@ -206,6 +232,8 @@ def create_library(
         terms=payload.terms,
         term_count=count,
         is_enabled=payload.is_enabled,
+        risk_level=_validate_risk(payload.risk_level),
+        hit_action=_validate_action(payload.hit_action),
     )
     db.add(lib)
     db.commit()
@@ -244,6 +272,10 @@ def update_library(
         lib.term_count = _validate_terms(lib.terms)
     if "is_enabled" in data:
         lib.is_enabled = bool(data["is_enabled"])
+    if "risk_level" in data:
+        lib.risk_level = _validate_risk(str(data["risk_level"]))
+    if "hit_action" in data:
+        lib.hit_action = _validate_action(str(data["hit_action"]))
     db.commit()
     db.refresh(lib)
     safety.invalidate_cache()
@@ -314,6 +346,7 @@ def create_policy(
         match_mode=payload.match_mode,
         case_sensitive=payload.case_sensitive,
         normalize=payload.normalize,
+        aggressive_normalize=payload.aggressive_normalize,
         threshold=payload.threshold,
         max_text_chars=payload.max_text_chars,
         fail_closed=payload.fail_closed,
@@ -355,8 +388,8 @@ def update_policy(
         _clear_other_defaults(db, keep_id=pid)
     for field in (
         "description", "is_enabled", "is_default", "input_enabled", "output_enabled",
-        "match_mode", "case_sensitive", "normalize", "threshold", "max_text_chars",
-        "fail_closed", "default_reply",
+        "match_mode", "case_sensitive", "normalize", "aggressive_normalize", "threshold",
+        "max_text_chars", "fail_closed", "default_reply",
     ):
         if field in data:
             setattr(p, field, data[field])
@@ -423,6 +456,8 @@ def _builtin_status(db: Session) -> SafetyBuiltinsRead:
                 or row.description != spec["description"]
                 or row.terms != spec["terms"]
                 or not row.is_enabled
+                or (row.risk_level or "medium") != spec.get("risk_level", "medium")
+                or (row.hit_action or "block") != spec.get("hit_action", "block")
             )
         )
         items.append(SafetyBuiltinItem(
@@ -495,10 +530,19 @@ def test_review(
     r = safety.review_texts([payload.text], policy, payload.direction, db=db)
     return SafetyTestResult(
         blocked=r.blocked,
-        matched=[{"term": m.get("term", ""), "library": m.get("library", "")} for m in r.matched],
+        matched=[
+            {
+                "term": m.get("term", ""),
+                "library": m.get("library", ""),
+                "risk_level": m.get("risk_level", ""),
+            }
+            for m in r.matched
+        ],
         policy_name=policy.name,
         detail=r.detail,
         truncated=r.truncated,
+        action=r.action,
+        risk_level=r.risk_level,
     )
 
 

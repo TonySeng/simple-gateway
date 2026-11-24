@@ -302,6 +302,8 @@ class SafetyLibraryCreate(BaseModel):
     description: str = ""
     terms: str = ""
     is_enabled: bool = True
+    risk_level: str = "medium"
+    hit_action: str = "block"
 
 
 class SafetyLibraryUpdate(BaseModel):
@@ -309,6 +311,8 @@ class SafetyLibraryUpdate(BaseModel):
     description: Optional[str] = None
     terms: Optional[str] = None
     is_enabled: Optional[bool] = None
+    risk_level: Optional[str] = None
+    hit_action: Optional[str] = None
 
 
 class SafetyLibraryRead(BaseModel):
@@ -318,6 +322,8 @@ class SafetyLibraryRead(BaseModel):
     terms: str = ""
     term_count: int = 0
     is_enabled: bool = True
+    risk_level: str = "medium"
+    hit_action: str = "block"
     is_builtin: bool = False
     builtin_key: str = ""
     created_at: datetime
@@ -335,6 +341,7 @@ class SafetyPolicyCreate(BaseModel):
     match_mode: str = "contains"
     case_sensitive: bool = False
     normalize: bool = True
+    aggressive_normalize: bool = False
     threshold: int = Field(1, ge=1, le=1000)
     max_text_chars: int = Field(200000, ge=1000, le=2000000)
     fail_closed: bool = False
@@ -352,6 +359,7 @@ class SafetyPolicyUpdate(BaseModel):
     match_mode: Optional[str] = None
     case_sensitive: Optional[bool] = None
     normalize: Optional[bool] = None
+    aggressive_normalize: Optional[bool] = None
     threshold: Optional[int] = Field(None, ge=1, le=1000)
     max_text_chars: Optional[int] = Field(None, ge=1000, le=2000000)
     fail_closed: Optional[bool] = None
@@ -371,6 +379,7 @@ class SafetyPolicyRead(BaseModel):
     match_mode: str = "contains"
     case_sensitive: bool = False
     normalize: bool = True
+    aggressive_normalize: bool = False
     threshold: int = 1
     max_text_chars: int = 200000
     fail_closed: bool = False
@@ -391,6 +400,7 @@ class SafetyTestRequest(BaseModel):
 class SafetyTestMatch(BaseModel):
     term: str
     library: str = ""
+    risk_level: str = "medium"
 
 
 class SafetyTestResult(BaseModel):
@@ -399,6 +409,9 @@ class SafetyTestResult(BaseModel):
     policy_name: str = ""
     detail: str = ""
     truncated: bool = False
+    # 汇总动作：block / sanitize / review / pass
+    action: str = "pass"
+    risk_level: str = ""
 
 
 class SafetyReviewItem(BaseModel):

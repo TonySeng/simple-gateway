@@ -233,6 +233,13 @@ class SafetyLibrary(Base):
     terms: Mapped[str] = mapped_column(Text, default="")
     term_count: Mapped[int] = mapped_column(Integer, default=0)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 风险分级与命中动作：决定该库命中后按什么等级处置。
+    #   risk_level  : low / medium / high / critical（用于排序与统计）
+    #   hit_action  : block（拦截，返回默认回复）/ sanitize（脱敏后放行）/
+    #                 review（放行但标记待复核）
+    # 一条规则引用多个库时，按「block > sanitize > review」取最严动作。
+    risk_level: Mapped[str] = mapped_column(String(16), default="medium", index=True)
+    hit_action: Mapped[str] = mapped_column(String(16), default="block")
     # 系统内置项标记：内置项同样可以在后台自由修改/停用/删除
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     builtin_key: Mapped[str] = mapped_column(String(64), default="", index=True)
@@ -263,6 +270,9 @@ class SafetyPolicy(Base):
     match_mode: Mapped[str] = mapped_column(String(16), default="contains")
     case_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
     normalize: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 深度归一化：额外生成「去掉分隔符/空白」的紧凑文本再匹配一次，
+    # 用于识别「毒 品」「毒-品」「毒.品」这类拆字绕过。默认关闭以控制误伤。
+    aggressive_normalize: Mapped[bool] = mapped_column(Boolean, default=False)
     # 命中多少个不同词条才拦截（1 = 任意命中；用于「至少命中 N 个」规则）
     threshold: Mapped[int] = mapped_column(Integer, default=1)
     # 单次审查的最大字符数，超出部分截断，避免超长上下文拖慢网关

@@ -297,14 +297,25 @@ python -m tools.migrate_legacy \
   （继承默认 / 关闭审查 / 指定规则）。默认按关键词子串匹配，支持 `re:` 正则、全半角/零宽/大小写归一化、
   命中阈值与输入/输出方向。输入命中直接返回默认内容且不调用上游；输出命中替换为默认内容；
   流式输出会整段缓冲后再判定，保证命中内容不会已经发给客户端。命中详情写入独立 `safety_reviews` 表，
-  请求日志的 `safety_result` 直接标注 `passed / blocked_input / blocked_output / error`。
-- **内置安全模板**：首次启动自动安装 7 套词库 + 4 条规则（`app/core/safety_bootstrap.py`）：
+  请求日志的 `safety_result` 直接标注 `passed / blocked_input / blocked_output / sanitized_input /
+  sanitized_output / review_input / review_output / error`。
+- **分级处置**：每个词库可声明风险等级（low/medium/high/critical）与命中动作：
+  `block`（拦截并返回默认回复）、`sanitize`（把命中片段替换为 `***` 后放行）、`review`（放行并标记待复核）。
+  一条规则引用多个词库时按最严动作汇总（`block > sanitize > review`）；输入脱敏在发往上游前改写请求体，
+  输出脱敏在返回客户端前改写响应体，流式输出脱敏会以整段脱敏文本重发一个合法 SSE 流。
+- **内置安全模板**：首次启动自动安装 17 套词库 + 8 条规则（`app/core/safety_bootstrap.py`）：
   - `内置·日常安全基线`（默认，输入+输出）：注入越狱、违法违规、恶意代码、凭证泄露，低误伤，所有未绑定 Key 自动继承；
   - `内置·个人隐私防护`（按需绑定）：手机号、身份证、银行卡、邮箱、IPv4；
   - `内置·数据防泄漏`（按需绑定）：涉密标记与内部文档术语，招标/评标场景请勿绑定；
-  - `内置·输出合规复核`（按需绑定，仅输出）：模型自称绕过限制等回复。
+  - `内置·输出合规复核`（按需绑定，仅输出）：模型自称绕过限制等回复；
+  - `内置·涉政/国家安全/政治人物`、`内置·涉政深度`（按需，critical）：只收录「违规行为 + 对象」组合；
+  - `内置·涉毒`、`内置·涉黄`、`内置·涉未成年色情（零容忍）`、`内置·暴力与自伤`、`内置·犯罪手法`（按需，high）；
+  - `内置·隐私脱敏`（按需，medium，动作为脱敏）；
+  - 三条组合规则：`内置·深度安全审查（分级处置）`、`内置·涉毒涉黄零容忍`、`内置·隐私脱敏放行`。
+  - 深度规则可开启「拆字识别」（`aggressive_normalize`），识别「毒 品」「海-洛-因」「煽 动分 裂国家」等绕过写法。
   - 内置项与自建项一样可直接编辑、停用、删除；启动时只补齐缺失项，**不覆盖用户修改**。
   后台「安全审查」页顶部可手动「补齐缺失」或「恢复出厂」（只覆盖内置项，自建数据不受影响）。
+  完整的类别/风险/动作/例外/误伤控制说明见 [`docs/safety-deep-review.md`](docs/safety-deep-review.md)。
 - **非 root 容器** + `/health` 健康检查 + `restart: unless-stopped`。
 - **限流**为进程内实现，多 worker / 多实例部署请替换为 Redis（改 `app/core/deps.py` 中的 `_rate_limited` 即可）。
 - 公网暴露前：改掉默认管理员口令、固定 JWT/Fernet 密钥、置于 Nginx/Caddy 后启用 HTTPS、
@@ -314,8 +325,10 @@ python -m tools.migrate_legacy \
 
 ```bash
 python -m tests.smoke
-python -m tests.test_safety_review
-python -m tests.test_safety_builtins
+python -m tests.test_safety_review          # 74 项：审查主流程、日志标注、流式、试审查
+python -m tests.test_safety_builtins        # 51 项：内置模板安装/幂等/补齐/恢复出厂
+python -m tests.test_safety_deep            # 52 项：六类风险、拆字/谐音/组合、动作分级、阈值
+python -m tests.test_safety_sanitize_proxy  # 19 项：输入/输出脱敏、复核放行、拦截回归
 ```
 
 52 项断言覆盖：启动建表、登录与鉴权、统一厂商 CRUD 与凭证合并语义、模型管理、

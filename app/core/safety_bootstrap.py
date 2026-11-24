@@ -30,7 +30,7 @@ from app.core.models import Meta, SafetyLibrary, SafetyPolicy
 logger = logging.getLogger("gateway.safety.bootstrap")
 
 META_KEY = "safety_builtin_version"
-BUILTIN_VERSION = "2026.11.24-2"
+BUILTIN_VERSION = "2026.11.24-3"
 DEFAULT_REPLY = "抱歉，该内容未通过安全审查，无法为您生成回复。"
 
 # ---------------------------------------------------------------- 内置词库
@@ -185,6 +185,126 @@ re:(恶搞|丑化|P图|伪造).{0,8}(领导人|国家主席|总书记).{0,8}(头
 """,
     },
     {
+        "key": "builtin:deep_political",
+        "name": "内置·涉政深度（按需）",
+        "description": "政治谣言、攻击国家制度、煽动对抗、境外势力干预、非法组织等违规组合；critical 级，命中即拦截",
+        "risk_level": "critical",
+        "hit_action": "block",
+        "terms": """\
+# 涉政深度：仅收录「违规行为 + 对象」组合，不收裸政治名词与具体人名。
+re:(煽动|宣扬|鼓吹|散布).{0,10}(分裂国家|民族分裂|国家分裂|破坏统一)
+re:(攻击|诋毁|否定|抹黑).{0,8}(国家制度|社会主义制度|宪法确立|党的领导|政治体制)
+re:(造谣|捏造|编造|散布).{0,10}(政治谣言|政变|政局动荡)
+re:(造谣|捏造|编造).{0,8}(领导人|国家主席|总书记).{0,6}(病情|去世|丑闻|绯闻)
+re:(组织|策划|煽动).{0,8}(非法集会|非法游行|聚众闹事|冲击国家机关)
+re:(境外|外国).{0,6}(势力|机构|组织).{0,8}(资助|指使|煽动).{0,8}(颠覆|分裂|对抗政府)
+re:(建立|组建|成立).{0,8}(非法政党|反政府组织|地下组织)
+""",
+    },
+    {
+        "key": "builtin:deep_drug",
+        "name": "内置·涉毒（按需）",
+        "description": "毒品种类、制贩运、吸毒工具与常见黑话；high 级。仅用于识别与拦截，不含任何制作方法",
+        "risk_level": "high",
+        "hit_action": "block",
+        "terms": """\
+# 涉毒：确定性强的高危毒品名单独匹配；易歧义词（大麻/溜冰等）只做语境组合匹配。
+# 毒品名用「一行一词」而非正则合并，这样开启拆字识别时才能命中「冰 毒」「海-洛-因」。
+海洛因
+冰毒
+甲基苯丙胺
+可卡因
+氯胺酮
+芬太尼
+摇头丸
+麻古
+k粉
+re:(制毒|制冰|提炼毒品|毒品配方|毒品合成|毒品提纯)
+re:(贩毒|运毒|藏毒|毒品交易|毒品买卖|毒品走私)
+re:(吸食|贩卖|种植|购买|持有|食用|注射).{0,6}(大麻|冰毒|海洛因|可卡因|摇头丸|k粉|麻古)
+re:(吸毒工具|冰壶|溜冰壶).{0,6}(吸毒|溜冰|打k)
+re:(溜冰|打k|飞叶子|嗨药).{0,6}(吸毒|毒品|上头|嗑药|嗨)
+""",
+    },
+    {
+        "key": "builtin:deep_porn",
+        "name": "内置·涉黄（按需）",
+        "description": "情色交易与色情内容的确定性表述；high 级。仅成人向，涉未成年内容见独立零容忍词库",
+        "risk_level": "high",
+        "hit_action": "block",
+        "terms": """\
+# 涉黄（成人向）：用「限定词 + 载体/交易」组合，避免误伤「成人教育」等正常词。
+re:(色情|淫秽).{0,6}(网站|视频|影片|直播|小说|图片|资源|链接)
+re:(裸聊|情色|三级片|黄片|av女优|成人影片|成人视频|色情直播)
+re:(援交|包夜|嫖娼|卖淫|性交易|性服务|特殊服务).{0,8}(价格|多少钱|联系|上门)?
+re:(约炮|一夜情).{0,8}(软件|平台|联系方式|附近)
+""",
+    },
+    {
+        "key": "builtin:deep_porn_minor",
+        "name": "内置·涉未成年色情（零容忍）",
+        "description": "涉及未成年人的色情内容，法律与平台规则零容忍；critical 级，命中一律拦截，不可降级为脱敏或复核",
+        "risk_level": "critical",
+        "hit_action": "block",
+        "terms": """\
+# 涉未成年色情：零容忍。任何引用本库的规则都应保持 block，切勿改为 sanitize/review。
+re:(儿童|幼女|未成年|未成年人).{0,8}(色情|淫秽|裸照|裸体|性行为|性侵|援交|色情视频)
+re:(萝莉|正太).{0,8}(裸|色情|调教|性)
+re:儿童色情
+re:幼女.{0,6}(性|裸|淫)
+""",
+    },
+    {
+        "key": "builtin:deep_violence",
+        "name": "内置·暴力与自伤（按需）",
+        "description": "凶器制作、虐杀肢解、自残自杀诱导、绑架拐卖等；high 级。自杀相关仅拦截「方法/教程」类诱导",
+        "risk_level": "high",
+        "hit_action": "block",
+        "terms": """\
+# 暴力：只拦截「制作/教程/流程」类实操诱导，正常的安全教育与新闻报道不在其中。
+re:(制作|自制|组装|改造).{0,8}(炸弹|爆炸物|枪支|管制刀具|弓弩|燃烧瓶)
+re:(虐杀|肢解|碎尸|活埋|凌迟).{0,8}(教程|方法|视频|过程)?
+re:(自杀|自残|割腕|上吊|跳楼).{0,8}(方法|教程|无痛|最快|怎么死|怎么自杀)
+re:(绑架|拐卖|人口贩卖|器官贩卖).{0,8}(儿童|妇女|流程|价格|渠道)?
+re:(校园暴力|霸凌|群殴).{0,8}(视频|教程|怎么打|打人)
+""",
+    },
+    {
+        "key": "builtin:deep_crime",
+        "name": "内置·犯罪手法（按需）",
+        "description": "诈骗话术、洗钱跑分、网络赌博、伪造证件、黑客攻击服务、贩卖个人信息、走私；high 级",
+        "risk_level": "high",
+        "hit_action": "block",
+        "terms": """\
+# 犯罪手法：以「违规行为 + 教程/服务/交易」组合判定，拦截实操指导与撮合。
+re:(诈骗|骗术|话术).{0,8}(教程|模板|套路|脚本|话本)
+re:(洗钱|跑分|水房|地下钱庄).{0,8}(服务|平台|渠道|接单|多少钱|联系|教程|流程)
+re:(教我|如何|怎么|求).{0,6}(洗钱|跑分|盗刷|诈骗)
+re:(网络赌博|博彩平台|私彩|时时彩|六合彩|赌球平台)
+re:(伪造|代办|办假).{0,8}(证件|身份证|公章|发票|银行卡|学历)
+re:(黑客|入侵|ddos|撞库|拖库|木马|勒索病毒).{0,8}(服务|教程|工具|接单|代做)
+re:(贩卖|出售|买卖|收购).{0,8}(个人信息|身份证信息|银行卡|手机号数据|公民信息|人脸数据)
+re:(走私|偷渡).{0,8}(枪支|毒品|货物|人员|通道)
+""",
+    },
+    {
+        "key": "builtin:deep_privacy",
+        "name": "内置·隐私脱敏（按需）",
+        "description": "身份证、银行卡、手机号、邮箱、IP、住址/病历等敏感个人信息；medium 级，命中默认「脱敏」放行而非拦截",
+        "risk_level": "medium",
+        "hit_action": "sanitize",
+        "terms": """\
+# 隐私：默认动作是脱敏（替换为 ***），适合需要保留语义但不能外泄原文的场景。
+# 若业务要求直接拦截，把本库的 hit_action 改为 block 即可。
+re:(?<!\\d)1[3-9]\\d{9}(?!\\d)
+re:(?<!\\d)\\d{17}[\\dXx](?!\\d)
+re:(?<!\\d)\\d{16,19}(?!\\d)
+re:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}
+re:(?<!\\d)(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(\\.(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}(?!\\d)
+re:(身份证号|银行卡号|护照号|社保号|医保号|家庭住址|现住址|病历号|就诊记录|人脸信息|行踪轨迹).{0,6}[:：]?\\s*[\\w\\u4e00-\\u9fa5\\-]{4,}
+""",
+    },
+    {
         "key": "builtin:output",
         "name": "内置·输出合规复核（按需）",
         "description": "模型回复中声称绕过限制、输出攻击配方等信号；仅用于输出方向",
@@ -255,6 +375,52 @@ BUILTIN_POLICIES: list[dict[str, Any]] = [
         "fail_closed": False,
     },
     {
+        "key": "builtin:deep-policy",
+        "name": "内置·深度安全审查（分级处置）",
+        "description": "覆盖涉政/涉毒/涉黄/暴力/犯罪/隐私六类，开启拆字识别；高危类别拦截，隐私类自动脱敏放行，按最严动作汇总",
+        "libraries": [
+            "builtin:deep_political", "builtin:deep_drug", "builtin:deep_porn",
+            "builtin:deep_porn_minor", "builtin:deep_violence", "builtin:deep_crime",
+            "builtin:deep_privacy",
+        ],
+        "is_default": False,
+        "input_enabled": True,
+        "output_enabled": True,
+        "match_mode": "contains",
+        "aggressive_normalize": True,
+        "threshold": 1,
+        "default_reply": DEFAULT_REPLY,
+        "fail_closed": False,
+    },
+    {
+        "key": "builtin:vice-policy",
+        "name": "内置·涉毒涉黄零容忍（按需绑定）",
+        "description": "只引用毒品与色情（含涉未成年）词库，开启拆字识别；适合对外部开放、需要强合规的 Key",
+        "libraries": ["builtin:deep_drug", "builtin:deep_porn", "builtin:deep_porn_minor"],
+        "is_default": False,
+        "input_enabled": True,
+        "output_enabled": True,
+        "match_mode": "contains",
+        "aggressive_normalize": True,
+        "threshold": 1,
+        "default_reply": DEFAULT_REPLY,
+        "fail_closed": False,
+    },
+    {
+        "key": "builtin:privacy-sanitize",
+        "name": "内置·隐私脱敏放行（按需绑定）",
+        "description": "只对身份证/银行卡/手机号/邮箱/住址等敏感信息做脱敏替换后放行，不阻断请求；适合内部数据分析场景",
+        "libraries": ["builtin:deep_privacy"],
+        "is_default": False,
+        "input_enabled": True,
+        "output_enabled": True,
+        "match_mode": "contains",
+        "aggressive_normalize": False,
+        "threshold": 1,
+        "default_reply": DEFAULT_REPLY,
+        "fail_closed": False,
+    },
+    {
         "key": "builtin:output-policy",
         "name": "内置·输出合规复核（按需绑定）",
         "description": "仅审查模型输出，捕获自称绕过限制、输出攻击配方等回复；可与其它规则叠加在 Key 上",
@@ -309,6 +475,8 @@ def _install_libraries(db: Session, *, overwrite: bool) -> tuple[dict[str, str],
                     if line.strip() and not line.strip().startswith("#")
                 ),
                 is_enabled=True,
+                risk_level=spec.get("risk_level", "medium"),
+                hit_action=spec.get("hit_action", "block"),
                 is_builtin=True,
                 builtin_key=key,
             )
@@ -323,6 +491,8 @@ def _install_libraries(db: Session, *, overwrite: bool) -> tuple[dict[str, str],
                 1 for line in spec["terms"].splitlines()
                 if line.strip() and not line.strip().startswith("#")
             )
+            row.risk_level = spec.get("risk_level", "medium")
+            row.hit_action = spec.get("hit_action", "block")
             row.is_builtin = True
             updated += 1
         ids[key] = row.id
@@ -362,6 +532,7 @@ def _install_policies(
                 match_mode=spec["match_mode"],
                 case_sensitive=False,
                 normalize=True,
+                aggressive_normalize=bool(spec.get("aggressive_normalize", False)),
                 threshold=spec["threshold"],
                 max_text_chars=200000,
                 fail_closed=spec["fail_closed"],
@@ -379,6 +550,7 @@ def _install_policies(
             row.match_mode = spec["match_mode"]
             row.case_sensitive = False
             row.normalize = True
+            row.aggressive_normalize = bool(spec.get("aggressive_normalize", False))
             row.threshold = spec["threshold"]
             row.fail_closed = spec["fail_closed"]
             row.default_reply = spec["default_reply"]
