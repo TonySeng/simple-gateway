@@ -330,6 +330,41 @@ class SafetyLibraryRead(BaseModel):
     updated_at: datetime
 
 
+class SafetyLibraryImportItem(BaseModel):
+    """导入文件中的单个词库；缺省字段按低误伤默认值补齐。"""
+
+    name: str = ""
+    description: str = ""
+    terms: str = ""
+    risk_level: str = "medium"
+    hit_action: str = "block"
+    is_enabled: bool = True
+    builtin_key: str = ""
+
+
+class SafetyLibraryImportRequest(BaseModel):
+    libraries: list[SafetyLibraryImportItem] = Field(default_factory=list)
+    # merge=同名追加去重 / overwrite=同名整体替换 / copy=同名另存副本
+    mode: str = "merge"
+
+
+class SafetyLibraryImportOutcome(BaseModel):
+    name: str
+    action: str  # created | merged | overwritten | skipped
+    term_count: int = 0
+    added: int = 0
+    reason: str = ""
+
+
+class SafetyLibraryImportResult(BaseModel):
+    created: int = 0
+    merged: int = 0
+    overwritten: int = 0
+    skipped: int = 0
+    terms_added: int = 0
+    items: list[SafetyLibraryImportOutcome] = Field(default_factory=list)
+
+
 class SafetyPolicyCreate(BaseModel):
     name: str
     description: str = ""

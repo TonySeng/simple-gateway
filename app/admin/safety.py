@@ -1,11 +1,13 @@
 """安全审查管理：词库、规则、Key 绑定辅助与独立审查记录。"""
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,9 @@ from app.core.schemas import (
     SafetyBuiltinItem,
     SafetyBuiltinsRead,
     SafetyLibraryCreate,
+    SafetyLibraryImportOutcome,
+    SafetyLibraryImportRequest,
+    SafetyLibraryImportResult,
     SafetyLibraryRead,
     SafetyLibraryUpdate,
     SafetyOverview,
@@ -41,6 +46,10 @@ router = APIRouter(prefix="/api/admin/safety", tags=["安全审查"])
 
 MAX_TERMS = 10000
 MAX_REGEX_LEN = 500
+
+# 导出文件标识：导入时按 format 字段判断是否本系统导出的词库包
+EXPORT_FORMAT = "simple-gateway.safety.libraries"
+EXPORT_VERSION = 1
 
 RISK_LEVELS = ("low", "medium", "high", "critical")
 HIT_ACTIONS = ("block", "sanitize", "review")
@@ -73,11 +82,36 @@ def _today_utc() -> datetime:
 
 def _term_lines(terms: str) -> list[str]:
     out: list[str] = []
-    for raw in (terms or "").splitlines():
+    # 去掉 BOM：Windows 记事本/Excel 保存的 UTF-8 文件常带，否则第一行首字符会被当成词条的一部分
+    for raw in (terms or "").lstrip("\ufeff").splitlines():
         line = raw.strip()
         if line and not line.startswith("#"):
             out.append(line)
     return out
+
+
+def _safe_filename(name: str) -> str:
+    """把词库名转成可用作文件名的形式（去掉路径分隔符与控制字符）。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "-", name or "").strip(" .-")
+    return cleaned[:60] or "safety-library"
+
+
+def _attachment(filename: str) -> str:
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"{quoted}\"; filename*=UTF-8''{quoted}"
+
+
+def _unique_name(name: str, taken: set[str]) -> str:
+    """同名冲突时生成「xxx（导入）」「xxx（导入 2）」这样的可用名称。"""
+    if name not in taken:
+        return name
+    candidate = f"{name}（导入）"
+    if candidate not in taken:
+        return candidate
+    i = 2
+    while f"{name}（导入 {i}）" in taken:
+        i += 1
+    return f"{name}（导入 {i}）"
 
 
 def _validate_terms(terms: str) -> int:
@@ -211,6 +245,255 @@ def _clear_other_defaults(db: Session, keep_id: str | None = None) -> None:
 def list_libraries(db: Session = Depends(get_db), admin: str = Depends(get_current_admin)):
     rows = db.query(SafetyLibrary).order_by(SafetyLibrary.updated_at.desc()).all()
     return [_to_library(x) for x in rows]
+
+
+@router.get("/libraries/export", summary="导出词库（JSON 可批量 / TXT 单库）")
+def export_libraries(
+    ids: str = "",
+    fmt: str = "json",
+    db: Session = Depends(get_db),
+    admin: str = Depends(get_current_admin),
+):
+    """导出词库为可再次导入的文件。
+
+    * ``fmt=json``：可一次导出多套（默认全部），带风险等级、命中动作等元数据，可直接导入；
+    * ``fmt=txt``：只允许单套，纯词条文本（含注释头），方便人工编辑或给其它系统使用。
+    """
+    fmt = (fmt or "json").strip().lower()
+    if fmt not in ("json", "txt"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="fmt 只能是 json / txt")
+
+    id_list = [x.strip() for x in (ids or "").split(",") if x.strip()]
+    q = db.query(SafetyLibrary)
+    if id_list:
+        q = q.filter(SafetyLibrary.id.in_(id_list))
+    libs = q.order_by(SafetyLibrary.name).all()
+    if not libs:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="没有可导出的词库")
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if fmt == "txt":
+        if len(libs) != 1:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="TXT 只能导出单个词库；要导出多套请用 JSON",
+            )
+        lib = libs[0]
+        header = (
+            f"# 词库：{lib.name}\n"
+            f"# 风险：{lib.risk_level or 'medium'} · 动作：{lib.hit_action or 'block'} · "
+            f"词条：{lib.term_count or 0}\n"
+            f"# 导出时间：{stamp}\n"
+            "# 一行一个词条；re: 前缀表示正则；# 开头为注释\n\n"
+        )
+        body = "\ufeff" + header + (lib.terms or "")
+        return Response(
+            content=body.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": _attachment(f"{_safe_filename(lib.name)}-{stamp}.txt"),
+            },
+        )
+
+    payload = {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "builtin_version": BUILTIN_VERSION,
+        "exported_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds") + "Z",
+        "libraries": [
+            {
+                "name": lib.name,
+                "description": lib.description or "",
+                "terms": lib.terms or "",
+                "risk_level": lib.risk_level or "medium",
+                "hit_action": lib.hit_action or "block",
+                "is_enabled": bool(lib.is_enabled),
+                "builtin_key": lib.builtin_key or "",
+                "term_count": lib.term_count or 0,
+            }
+            for lib in libs
+        ],
+    }
+    filename = (
+        f"safety-libraries-{stamp}.json"
+        if len(libs) > 1
+        else f"{_safe_filename(libs[0].name)}-{stamp}.json"
+    )
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": _attachment(filename)},
+    )
+
+
+@router.get("/libraries/template", summary="下载导入模板（JSON / TXT）")
+def library_import_template(
+    fmt: str = "json",
+    admin: str = Depends(get_current_admin),
+):
+    """下载导入模板：字段、示例与注释都写在文件里，按模板填完直接导入。"""
+    fmt = (fmt or "json").strip().lower()
+    if fmt not in ("json", "txt"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="fmt 只能是 json / txt")
+
+    if fmt == "txt":
+        body = (
+            "\ufeff"
+            "# 词库名：正式导入时以「文件名」作为词库名，导入后可在列表里改名\n"
+            "# 一行一个词条；re: 前缀表示正则；# 开头的行会被忽略\n"
+            "# 风险等级与命中动作不在 TXT 里设置，导入后默认 medium / block，可再编辑\n"
+            "# 示例（请替换成自己的词条，导入前可删掉示例行）：\n"
+            "示例词条一\n"
+            "示例词条二\n"
+            "re:(示例|样例).{0,6}(正则|表达式)\n"
+        )
+        return Response(
+            content=body.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": _attachment("safety-library-template.txt")},
+        )
+
+    template = {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "libraries": [
+            {
+                "name": "示例词库（改成你的名称）",
+                "description": "用途或维护人，可留空",
+                "risk_level": "medium",
+                "hit_action": "block",
+                "is_enabled": True,
+                "terms": (
+                    "# 以 # 开头的行是注释，不会被导入\n"
+                    "# 普通词一行一个；正则用 re: 前缀，最长为 500 字符\n"
+                    "示例词条一\n"
+                    "示例词条二\n"
+                    "re:(示例|样例).{0,6}(正则|表达式)"
+                ),
+            }
+        ],
+    }
+    return Response(
+        content=json.dumps(template, ensure_ascii=False, indent=2).encode("utf-8"),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": _attachment("safety-libraries-template.json")},
+    )
+
+
+@router.post("/libraries/import", response_model=SafetyLibraryImportResult, summary="导入词库")
+def import_libraries(
+    payload: SafetyLibraryImportRequest,
+    db: Session = Depends(get_db),
+    admin: str = Depends(get_current_admin),
+):
+    """批量导入词库。
+
+    匹配顺序：先按名称，再按 ``builtin_key``（跨环境迁移内置库时不重复建库）。
+    * ``merge``：命中的词库追加新词条并去重，风险等级/命中动作保持目标库不变；
+    * ``overwrite``：命中的词库用文件内容整体替换（保留 id 与内置标记）；
+    * ``copy``：命中的词库不动，另存为「名称（导入）」。
+    """
+    mode = (payload.mode or "merge").strip().lower()
+    if mode not in ("merge", "overwrite", "copy"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="mode 只能是 merge / overwrite / copy")
+    if not payload.libraries:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="导入内容为空")
+
+    result = SafetyLibraryImportResult()
+    existing = db.query(SafetyLibrary).all()
+    by_name: dict[str, SafetyLibrary] = {x.name: x for x in existing}
+    by_builtin: dict[str, SafetyLibrary] = {
+        x.builtin_key: x for x in existing if x.builtin_key
+    }
+
+    for item in payload.libraries:
+        raw_name = (item.name or "").strip()
+        terms = (item.terms or "").lstrip("\ufeff")
+        risk = _validate_risk(item.risk_level)
+        action = _validate_action(item.hit_action)
+
+        target = by_name.get(raw_name) if raw_name else None
+        if target is None and item.builtin_key:
+            target = by_builtin.get(item.builtin_key)
+
+        if target is not None and mode == "merge":
+            seen = set(_term_lines(target.terms))
+            added: list[str] = []
+            for t in _term_lines(terms):
+                # 既要跟目标库已有词条去重，也要防文件内部重复行
+                if t in seen:
+                    continue
+                seen.add(t)
+                added.append(t)
+            if not added:
+                result.skipped += 1
+                result.items.append(SafetyLibraryImportOutcome(
+                    name=target.name, action="skipped",
+                    term_count=target.term_count or 0, added=0, reason="没有新词条",
+                ))
+                continue
+            merged = (target.terms or "").rstrip("\n")
+            merged = (merged + "\n" if merged else "") + "\n".join(added)
+            target.terms = merged
+            target.term_count = _validate_terms(merged)
+            result.merged += 1
+            result.terms_added += len(added)
+            result.items.append(SafetyLibraryImportOutcome(
+                name=target.name, action="merged", term_count=target.term_count,
+                added=len(added), reason=f"追加 {len(added)} 条，已去重",
+            ))
+            continue
+
+        if target is not None and mode == "overwrite":
+            target.terms = terms
+            target.term_count = _validate_terms(terms)
+            target.description = (item.description or "").strip()
+            target.risk_level = risk
+            target.hit_action = action
+            target.is_enabled = bool(item.is_enabled)
+            result.overwritten += 1
+            result.terms_added += target.term_count
+            result.items.append(SafetyLibraryImportOutcome(
+                name=target.name, action="overwritten", term_count=target.term_count,
+                added=target.term_count, reason="已用文件内容替换",
+            ))
+            continue
+
+        # 新建（mode=copy 且同名，或名称/builtin_key 都没命中）
+        final_name = raw_name or "导入词库"
+        taken = set(by_name)
+        if target is not None or final_name in taken:
+            final_name = _unique_name(final_name, taken)
+        # 副本不应继承 builtin_key，否则内置库会出现两条同 key 记录
+        builtin_key = (item.builtin_key or "")[:64]
+        if builtin_key and builtin_key in by_builtin:
+            builtin_key = ""
+        lib = SafetyLibrary(
+            name=final_name,
+            description=(item.description or "").strip(),
+            terms=terms,
+            term_count=_validate_terms(terms),
+            is_enabled=bool(item.is_enabled),
+            risk_level=risk,
+            hit_action=action,
+            is_builtin=bool(builtin_key),
+            builtin_key=builtin_key,
+        )
+        db.add(lib)
+        db.flush()
+        by_name[final_name] = lib
+        if lib.builtin_key:
+            by_builtin[lib.builtin_key] = lib
+        result.created += 1
+        result.terms_added += lib.term_count
+        result.items.append(SafetyLibraryImportOutcome(
+            name=final_name, action="created", term_count=lib.term_count,
+            added=lib.term_count, reason="新建词库",
+        ))
+
+    db.commit()
+    safety.invalidate_cache()
+    return result
 
 
 @router.post("/libraries", response_model=SafetyLibraryRead, status_code=status.HTTP_201_CREATED,

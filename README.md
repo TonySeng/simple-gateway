@@ -316,6 +316,12 @@ python -m tools.migrate_legacy \
   - 内置项与自建项一样可直接编辑、停用、删除；启动时只补齐缺失项，**不覆盖用户修改**。
   后台「安全审查」页顶部可手动「补齐缺失」或「恢复出厂」（只覆盖内置项，自建数据不受影响）。
   完整的类别/风险/动作/例外/误伤控制说明见 [`docs/safety-deep-review.md`](docs/safety-deep-review.md)。
+- **词库导入导出**：后台「安全审查 → 敏感词库」支持
+  - 导出：单库 TXT（带注释头，便于人工编辑）、单库/全部 JSON（含 `risk_level`、`hit_action` 等元数据，可跨环境搬运）；
+  - 导入：JSON 可批量，TXT 按「文件名 = 词库名」建一个库；同名冲突可选 `merge`（追加去重，保留原风险与动作）、
+    `overwrite`（整体替换）、`copy`（另存「名称（导入）」）；先按名称匹配，再按 `builtin_key` 匹配；
+  - 模板：导入弹窗内可直接下载 JSON / TXT 模板，字段与注释都写在文件里；
+  - 词条在导入前统一校验（正则语法、条数上限），任一条不合法则整批回滚。
 - **非 root 容器** + `/health` 健康检查 + `restart: unless-stopped`。
 - **限流**为进程内实现，多 worker / 多实例部署请替换为 Redis（改 `app/core/deps.py` 中的 `_rate_limited` 即可）。
 - 公网暴露前：改掉默认管理员口令、固定 JWT/Fernet 密钥、置于 Nginx/Caddy 后启用 HTTPS、

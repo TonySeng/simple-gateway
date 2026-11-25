@@ -100,6 +100,25 @@
     return raw ? res : data;
   }
 
+  /* 带登录态下载文件：用 fetch 拿到 blob 再触发保存，避免 <a href> 丢 Authorization 头 */
+  async function downloadFile(url, fallbackName) {
+    const res = await api(url, "GET", null, true);
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    let name = fallbackName || "download";
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+    const plain = /filename="([^"]+)"/i.exec(cd);
+    if (star) { try { name = decodeURIComponent(star[1]); } catch (e) { /* 保留默认名 */ } }
+    else if (plain) name = plain[1];
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+
   /* ===================== 弹窗 ===================== */
   function modal(html, wide) {
     $("#modal-root").innerHTML =
@@ -1407,11 +1426,20 @@
         <td>${l.is_enabled ? '<span class="tag ok">启用</span>' : '<span class="tag err">停用</span>'}</td>
         <td class="small muted">${fmtDate(l.updated_at)}</td>
         <td class="nowrap">
+          <button class="btn-ghost btn-sm" data-export-lib="${esc(l.id)}" data-lib-name="${esc(l.name)}">导出</button>
           <button class="btn-ghost btn-sm" data-edit-lib="${esc(l.id)}">编辑</button>
           <button class="btn-danger btn-sm" data-del-lib="${esc(l.id)}">删除</button>
         </td>
       </tr>`).join("");
-      body = `<div class="card"><div class="table-wrap"><table>
+      body = `<div class="card">
+        <div class="table-toolbar">
+          <div class="small muted">共 ${num(App.safetyLibraries.length)} 套词库；JSON 导出可在另一环境整批导入，TXT 便于人工编辑。</div>
+          <div class="head-actions">
+            <button class="btn-ghost btn-sm" id="lib-import">导入</button>
+            <button class="btn-ghost btn-sm" id="lib-export-all">导出全部</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table class="sticky-last">
         <thead><tr><th>词库</th><th>词条</th><th>风险 / 动作</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="muted small">还没有词库，先新建一套敏感词</td></tr>'}</tbody>
       </table></div></div>`;
@@ -1469,11 +1497,18 @@
       const libMap = {};
       App.safetyLibraries.forEach((l) => { libMap[l.id] = l.name; });
       const policyRows = App.safetyPolicies.map((p) => {
-        const libsText = (p.library_ids || []).map((id) => libMap[id] || id).join("、") || '<span class="muted">未引用词库</span>';
+        const libNames = (p.library_ids || []).map((id) => libMap[id] || id);
+        const shown = libNames.slice(0, 3).map((n) => `<span class="tag">${esc(n)}</span>`).join("");
+        const more = libNames.length > 3
+          ? `<span class="tag info" title="${esc(libNames.slice(3).join("、"))}">+${libNames.length - 3}</span>`
+          : "";
+        const libsCell = libNames.length
+          ? `<div class="lib-tags" title="${esc(libNames.join("、"))}">${shown}${more}</div>`
+          : '<span class="muted small">未引用词库</span>';
         const dirs = [p.input_enabled ? "输入" : "", p.output_enabled ? "输出" : ""].filter(Boolean).join(" + ") || "无";
         return `<tr>
           <td><b>${esc(p.name)}</b>${p.is_builtin ? ' <span class="tag info">内置</span>' : ""}${p.is_default ? ' <span class="tag ok">默认</span>' : ""}<div class="small muted">${esc(p.description || "")}</div></td>
-          <td class="small">${esc(libsText)}</td>
+          <td class="cell-libs small">${libsCell}</td>
           <td class="small">${esc(dirs)}</td>
           <td class="small">${esc(p.match_mode === "word" ? "词边界" : "子串")} · 阈值 ${num(p.threshold)}</td>
           <td class="small">${num(p.bound_keys)} 个</td>
@@ -1498,7 +1533,7 @@
           <span id="test-result" class="small muted" style="min-width:0;overflow-wrap:anywhere"></span>
         </div>
       </div>
-      <div class="card"><div class="table-wrap"><table>
+      <div class="card"><div class="table-wrap"><table class="sticky-last">
         <thead><tr><th>规则</th><th>引用词库</th><th>方向</th><th>匹配</th><th>绑定 Key</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>${policyRows || '<tr><td colspan="7" class="muted small">还没有审查规则；新建规则后会自动成为默认规则</td></tr>'}</tbody>
       </table></div></div>`;
@@ -1526,6 +1561,21 @@
 
     $$("#content [data-edit-lib]").forEach((b) => {
       b.onclick = () => openLibraryForm(App.safetyLibraries.find((x) => x.id === b.dataset.editLib));
+    });
+    if ($("#lib-import")) $("#lib-import").onclick = () => openLibraryImport();
+    if ($("#lib-export-all")) $("#lib-export-all").onclick = async () => {
+      try {
+        await downloadFile("/api/admin/safety/libraries/export?fmt=json", "safety-libraries.json");
+        toast("已导出全部词库");
+      } catch (e) { toast(e.message, "err"); }
+    };
+    $$("#content [data-export-lib]").forEach((b) => {
+      b.onclick = async () => {
+        const fallback = (b.dataset.libName || "library") + ".txt";
+        try {
+          await downloadFile("/api/admin/safety/libraries/export?fmt=txt&ids=" + encodeURIComponent(b.dataset.exportLib), fallback);
+        } catch (e) { toast(e.message, "err"); }
+      };
     });
     $$("#content [data-del-lib]").forEach((b) => {
       b.onclick = async () => {
@@ -1580,6 +1630,131 @@
       $("#sr-prev").onclick = () => { App.safetyRecords.page = Math.max(1, App.safetyRecords.page - 1); renderSafety(); };
       $("#sr-next").onclick = () => { App.safetyRecords.page += 1; renderSafety(); };
     }
+  }
+
+  /* 解析导入文件：本系统导出的 JSON（可批量）或纯词条 TXT（一份一个词库） */
+  function parseLibraryFile(fileName, text) {
+    const clean = (text || "").replace(/^\uFEFF/, "");
+    const looksJson = /\.json$/i.test(fileName || "") || /^[\s]*[\[{]/.test(clean);
+    const countTerms = (t) => (t || "").split(/\r?\n/).filter((x) => x.trim() && !x.trim().startsWith("#")).length;
+
+    if (!looksJson) {
+      const base = (fileName || "导入词库").replace(/\.[^.\\/]+$/, "").trim() || "导入词库";
+      return [{
+        name: base,
+        description: `从 ${fileName} 导入`,
+        terms: clean,
+        risk_level: "medium",
+        hit_action: "block",
+        is_enabled: true,
+        builtin_key: "",
+        _count: countTerms(clean),
+      }];
+    }
+
+    let data;
+    try { data = JSON.parse(clean); } catch (e) { throw new Error("JSON 格式有误：" + e.message); }
+    const list = Array.isArray(data) ? data : (Array.isArray(data.libraries) ? data.libraries : [data]);
+    if (!list.length) throw new Error("文件里没有可导入的词库");
+    return list.map((x, i) => {
+      if (!x || typeof x !== "object" || Array.isArray(x)) throw new Error(`第 ${i + 1} 项不是词库对象`);
+      const terms = String(x.terms == null ? "" : x.terms);
+      return {
+        name: String(x.name || "").trim() || `导入词库 ${i + 1}`,
+        description: String(x.description || ""),
+        terms,
+        risk_level: ["low", "medium", "high", "critical"].includes(x.risk_level) ? x.risk_level : "medium",
+        hit_action: ["block", "sanitize", "review"].includes(x.hit_action) ? x.hit_action : "block",
+        is_enabled: x.is_enabled !== false,
+        builtin_key: String(x.builtin_key || ""),
+        _count: countTerms(terms),
+      };
+    });
+  }
+
+  function openLibraryImport() {
+    modal(`
+      <div class="modal-head"><h3>导入敏感词库</h3><button class="link" id="x">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><span>选择文件</span>
+          <input type="file" id="import-file" accept=".json,.txt,application/json,text/plain" />
+        </div>
+        <div class="hint-box small">支持本系统导出的 JSON（可批量，含风险等级与命中动作），也支持纯词条 TXT（一份文件一个词库，文件名作为词库名）。</div>
+        <div class="field"><span>没有现成文件？先下载模板</span>
+          <div class="head-actions" style="justify-content:flex-start">
+            <button class="btn-ghost btn-sm" id="tpl-json">下载 JSON 模板</button>
+            <button class="btn-ghost btn-sm" id="tpl-txt">下载 TXT 模板</button>
+          </div>
+        </div>
+        <div class="field"><span>遇到同名词库时</span>
+          <select id="import-mode">
+            <option value="merge">合并去重（推荐：保留原库的风险等级与动作，只补新词）</option>
+            <option value="overwrite">覆盖同名库（用文件内容整体替换词条与元数据）</option>
+            <option value="copy">另存副本（原库不动，新建「名称（导入）」）</option>
+          </select>
+        </div>
+        <div id="import-preview" class="hint-box small">选择文件后会在这里显示解析结果。</div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" id="cancel">取消</button>
+        <button class="btn-primary" id="do-import" disabled>开始导入</button>
+      </div>`, true);
+
+    let parsed = null;
+    const preview = $("#modal-root #import-preview");
+    const submit = $("#modal-root #do-import");
+    $("#modal-root #x").onclick = closeModal;
+    $("#modal-root #cancel").onclick = closeModal;
+
+    const grabTemplate = (fmt, fallback) => {
+      downloadFile("/api/admin/safety/libraries/template?fmt=" + fmt, fallback)
+        .catch((err) => toast(err.message, "err"));
+    };
+    $("#modal-root #tpl-json").onclick = () => grabTemplate("json", "safety-libraries-template.json");
+    $("#modal-root #tpl-txt").onclick = () => grabTemplate("txt", "safety-library-template.txt");
+
+    $("#modal-root #import-file").onchange = (e) => {
+      parsed = null;
+      submit.disabled = true;
+      const f = e.target.files && e.target.files[0];
+      if (!f) { preview.textContent = "选择文件后会在这里显示解析结果。"; return; }
+      if (f.size > 8 * 1024 * 1024) { preview.textContent = "文件超过 8MB，请拆分后再导入。"; return; }
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const items = parseLibraryFile(f.name, String(reader.result || ""));
+          const total = items.reduce((s, x) => s + x._count, 0);
+          parsed = items;
+          preview.innerHTML = `<div>共 <b>${items.length}</b> 个词库、<b>${num(total)}</b> 条词条：</div>`
+            + items.slice(0, 20).map((x) =>
+              `<div style="margin-top:4px">${esc(x.name)} · ${num(x._count)} 条 · ${safetyRiskTag(x.risk_level)} ${safetyActionTag(x.hit_action)}</div>`).join("")
+            + (items.length > 20 ? `<div style="margin-top:4px">…另有 ${items.length - 20} 个词库</div>` : "");
+          submit.disabled = false;
+        } catch (err) {
+          preview.textContent = "解析失败：" + err.message;
+        }
+      };
+      reader.readAsText(f, "utf-8");
+    };
+
+    submit.onclick = async () => {
+      if (!parsed) return;
+      const mode = $("#modal-root #import-mode").value;
+      const libraries = parsed.map((x) => {
+        const { _count, ...rest } = x;
+        return rest;
+      });
+      submit.disabled = true;
+      try {
+        const r = await api("/api/admin/safety/libraries/import", "POST", { libraries, mode });
+        closeModal();
+        toast(`导入完成：新建 ${r.created} · 合并 ${r.merged} · 覆盖 ${r.overwritten} · 跳过 ${r.skipped}，新增词条 ${num(r.terms_added)}`);
+        renderSafety();
+      } catch (err) {
+        submit.disabled = false;
+        toast(err.message, "err");
+      }
+    };
   }
 
   function openLibraryForm(lib) {

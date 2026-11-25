@@ -128,6 +128,23 @@ tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: rgba(255,255,255,.02); }
 td.wrap { white-space: normal; max-width: 460px; }
 
+/* ---------- 表格工具条 ---------- */
+.table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+
+/* 引用词库：多库时换行展示，前 3 个出标签，其余合并为 +N（悬停看全量） */
+td.cell-libs { white-space: normal; }
+.lib-tags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 320px; }
+
+/* 操作列常驻右侧：横向滚动时固定在容器右边缘，背景必须不透明否则内容会透出 */
+.table-wrap table.sticky-last th:last-child,
+.table-wrap table.sticky-last td:last-child {
+  position: sticky; right: 0;
+  box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .55);
+}
+.table-wrap table.sticky-last th:last-child { background: var(--panel-2); z-index: 3; }
+.table-wrap table.sticky-last td:last-child { background: var(--panel); z-index: 2; }
+.table-wrap table.sticky-last tbody tr:hover td:last-child { background: #1a1d24; }
+
 /* ---------- 标签 ---------- */
 .tag { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border); color: var(--muted); }
 .tag.ok { color: var(--ok); border-color: rgba(52,211,153,.3); background: rgba(52,211,153,.1); }
