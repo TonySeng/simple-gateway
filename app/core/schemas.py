@@ -353,6 +353,8 @@ class SafetyLibraryImportOutcome(BaseModel):
     action: str  # created | merged | overwritten | skipped
     term_count: int = 0
     added: int = 0
+    # 仅 overwrite 会移除词条；报出来避免「文件只含部分词条却整库替换」被误判
+    removed: int = 0
     reason: str = ""
 
 
@@ -361,7 +363,9 @@ class SafetyLibraryImportResult(BaseModel):
     merged: int = 0
     overwritten: int = 0
     skipped: int = 0
+    # 真实新增条数（不含「替换后总数」，overwrite 下与 added 一致口径）
     terms_added: int = 0
+    terms_removed: int = 0
     items: list[SafetyLibraryImportOutcome] = Field(default_factory=list)
 
 

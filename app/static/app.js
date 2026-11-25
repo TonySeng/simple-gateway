@@ -1693,7 +1693,7 @@
         <div class="field"><span>遇到同名词库时</span>
           <select id="import-mode">
             <option value="merge">合并去重（推荐：保留原库的风险等级与动作，只补新词）</option>
-            <option value="overwrite">覆盖同名库（用文件内容整体替换词条与元数据）</option>
+            <option value="overwrite">覆盖同名库（文件即最终结果：文件中没有的词条会被删除）</option>
             <option value="copy">另存副本（原库不动，新建「名称（导入）」）</option>
           </select>
         </div>
@@ -1752,7 +1752,12 @@
       try {
         const r = await api("/api/admin/safety/libraries/import", "POST", { libraries, mode });
         closeModal();
-        toast(`导入完成：新建 ${r.created} · 合并 ${r.merged} · 覆盖 ${r.overwritten} · 跳过 ${r.skipped}，新增词条 ${num(r.terms_added)}`);
+        const removedTip = r.terms_removed ? ` · 移除词条 ${num(r.terms_removed)}` : "";
+        toast(
+          `导入完成：新建 ${r.created} · 合并 ${r.merged} · 覆盖 ${r.overwritten} · 跳过 ${r.skipped}，`
+            + `新增词条 ${num(r.terms_added)}${removedTip}`,
+          r.terms_removed ? "warn" : ""
+        );
         renderSafety();
       } catch (err) {
         submit.disabled = false;

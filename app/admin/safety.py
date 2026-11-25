@@ -429,7 +429,11 @@ def import_libraries(
                 result.skipped += 1
                 result.items.append(SafetyLibraryImportOutcome(
                     name=target.name, action="skipped",
-                    term_count=target.term_count or 0, added=0, reason="没有新词条",
+                    term_count=target.term_count or 0, added=0,
+                    reason=(
+                        "没有新词条（合并模式只追加，不改动已有词条与风险/动作）；"
+                        "如需按文件同步修改或删除，请改用覆盖模式"
+                    ),
                 ))
                 continue
             merged = (target.terms or "").rstrip("\n")
@@ -440,11 +444,18 @@ def import_libraries(
             result.terms_added += len(added)
             result.items.append(SafetyLibraryImportOutcome(
                 name=target.name, action="merged", term_count=target.term_count,
-                added=len(added), reason=f"追加 {len(added)} 条，已去重",
+                added=len(added),
+                reason=f"追加 {len(added)} 条（已去重）；已有词条与风险/动作保持不变",
             ))
             continue
 
         if target is not None and mode == "overwrite":
+            # 报告真实差异：overwrite 是「文件即最终结果」，文件里没有的词条会被删掉，
+            # 若把替换后的总数当新增上报，用户会误以为只是追加。
+            old_terms = set(_term_lines(target.terms))
+            new_terms = set(_term_lines(terms))
+            added_n = len(new_terms - old_terms)
+            removed_n = len(old_terms - new_terms)
             target.terms = terms
             target.term_count = _validate_terms(terms)
             target.description = (item.description or "").strip()
@@ -452,10 +463,15 @@ def import_libraries(
             target.hit_action = action
             target.is_enabled = bool(item.is_enabled)
             result.overwritten += 1
-            result.terms_added += target.term_count
+            result.terms_added += added_n
+            result.terms_removed += removed_n
             result.items.append(SafetyLibraryImportOutcome(
                 name=target.name, action="overwritten", term_count=target.term_count,
-                added=target.term_count, reason="已用文件内容替换",
+                added=added_n, removed=removed_n,
+                reason=(
+                    f"以文件为准整体替换：新增 {added_n} 条、移除 {removed_n} 条，"
+                    f"现有 {target.term_count} 条"
+                ),
             ))
             continue
 

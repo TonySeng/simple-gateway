@@ -267,4 +267,78 @@ with client:
     expect(rt.risk_level == "low" and rt.hit_action == "sanitize", "往返后元数据一致")
     db.close()
 
+    print("\n== 增量语义与报告准确性（merge 只追加 / overwrite 以文件为准）==")
+    base_terms = "语义甲\n语义乙\n语义丙"
+    adj_terms = "语义甲\n语义乙改\n语义丁"
+    r = client.post("/api/admin/safety/libraries", headers=H, json={
+        "name": "语义验证库", "terms": base_terms,
+        "risk_level": "medium", "hit_action": "block",
+    })
+    expect(r.status_code == 201, "建立语义验证原库", r.text[:160])
+    sid = r.json()["id"]
+
+    # merge：只做并集追加，不删不改
+    r = client.post("/api/admin/safety/libraries/import", headers=H, json={
+        "mode": "merge",
+        "libraries": [{"name": "语义验证库", "terms": adj_terms,
+                       "risk_level": "high", "hit_action": "sanitize"}],
+    })
+    res = r.json()
+    expect(res["merged"] == 1 and res["terms_added"] == 2 and res["terms_removed"] == 0,
+           "merge 只报新增 2 条、不移除", str({k: res[k] for k in ("merged", "terms_added", "terms_removed")}))
+    db = SessionLocal()
+    m = db.query(SafetyLibrary).filter(SafetyLibrary.id == sid).first()
+    got = [x for x in (m.terms or "").splitlines() if x.strip()]
+    expect("语义乙" in got and "语义乙改" in got,
+           "merge 下被改写的词以「新旧并存」留下（不替换）", str(got))
+    expect("语义丙" in got, "merge 不移除文件中没有的词", str(got))
+    expect(m.risk_level == "medium" and m.hit_action == "block",
+           "merge 不改动风险等级与命中动作", f"{m.risk_level}/{m.hit_action}")
+    db.close()
+
+    # merge 且无新词：skipped，并提示改用覆盖模式
+    r = client.post("/api/admin/safety/libraries/import", headers=H, json={
+        "mode": "merge",
+        "libraries": [{"name": "语义验证库", "terms": "语义甲",
+                       "risk_level": "critical", "hit_action": "block"}],
+    })
+    res = r.json()
+    expect(res["skipped"] == 1, "无新词时 merge 计入 skipped")
+    expect("覆盖模式" in res["items"][0]["reason"],
+           "skipped 原因提示改用覆盖模式", res["items"][0]["reason"])
+    db = SessionLocal()
+    m2 = db.query(SafetyLibrary).filter(SafetyLibrary.id == sid).first()
+    expect(m2.risk_level == "medium", "skipped 时元数据未被悄悄改写", m2.risk_level)
+    db.close()
+
+    # 重置为原始三词，再验证 overwrite 的真实差异口径
+    client.put(f"/api/admin/safety/libraries/{sid}", headers=H, json={
+        "terms": base_terms, "risk_level": "medium", "hit_action": "block",
+    })
+    r = client.post("/api/admin/safety/libraries/import", headers=H, json={
+        "mode": "overwrite",
+        "libraries": [{"name": "语义验证库", "terms": adj_terms,
+                       "risk_level": "high", "hit_action": "sanitize"}],
+    })
+    res = r.json()
+    expect(res["overwritten"] == 1, "overwrite 命中同名库")
+    db = SessionLocal()
+    o = db.query(SafetyLibrary).filter(SafetyLibrary.id == sid).first()
+    got2 = [x for x in (o.terms or "").splitlines() if x.strip()]
+    expect(got2 == ["语义甲", "语义乙改", "语义丁"],
+           "overwrite 后词条完全等于文件（旧的乙、丙已消失）", str(got2))
+    expect(o.risk_level == "high" and o.hit_action == "sanitize",
+           "overwrite 更新风险等级与命中动作", f"{o.risk_level}/{o.hit_action}")
+    db.close()
+    it = res["items"][0]
+    # old={甲,乙,丙} new={甲,乙改,丁} → 新增 {乙改,丁}=2、移除 {乙,丙}=2
+    expect(it["added"] == 2 and it["removed"] == 2,
+           "overwrite 报告真实新增 2 / 移除 2（不把替换后总数当新增）", str(it))
+    expect(res["terms_added"] == 2 and res["terms_removed"] == 2,
+           "汇总口径与明细一致", str({k: res[k] for k in ("terms_added", "terms_removed")}))
+    expect("移除 2 条" in it["reason"], "reason 明写移除条数", it["reason"])
+
+    client.delete(f"/api/admin/safety/libraries/{sid}", headers=H)
+    expect(True, "清理语义验证库")
+
     print(f"\n全部通过：{len(PASSED)} 项断言")
