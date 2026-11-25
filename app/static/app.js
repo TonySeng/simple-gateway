@@ -89,6 +89,10 @@
       // 不自动登出：交给下方统一错误处理，保留服务端 detail（如改密时当前密码错误）
     }
     if (res.status === 204) return null;
+    // raw 模式要把「未读过的 Response」交给调用方（下载场景紧接着调 res.blob()）。
+    // 这里必须先于 res.text() 返回，否则 body 被消费，blob() 会抛
+    // "Failed to execute 'blob' on 'Response': body stream already read"。
+    if (raw && res.ok) return res;
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }

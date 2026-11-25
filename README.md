@@ -335,6 +335,11 @@ python -m tests.test_safety_review          # 74 项：审查主流程、日志�
 python -m tests.test_safety_builtins        # 51 项：内置模板安装/幂等/补齐/恢复出厂
 python -m tests.test_safety_deep            # 52 项：六类风险、拆字/谐音/组合、动作分级、阈值
 python -m tests.test_safety_sanitize_proxy  # 19 项：输入/输出脱敏、复核放行、拦截回归
+python -m tests.test_safety_import_export   # 61 项：词库导入导出、模板、冲突策略、去重与回滚
+
+# 前端下载链路（fetch → blob，需 Node 18+ 与一个运行中的实例）
+node tests/frontend_download_check.mjs http://127.0.0.1:8020 admin '<管理员口令>'
+# 生产/远端可直接注入令牌：SG_TOKEN=<jwt> node tests/frontend_download_check.mjs http://<host>:8020
 ```
 
 52 项断言覆盖：启动建表、登录与鉴权、统一厂商 CRUD 与凭证合并语义、模型管理、
