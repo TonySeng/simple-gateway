@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.core.concurrency import effective_max_concurrency, key_concurrency
 from app.core.db import get_db
 from app.core.deps import allowed_provider_types, api_key_auth, get_client_ip
 from app.core.live import live
@@ -144,6 +145,19 @@ async def recognize_file(
 async def _run(db, key, image, mime, provider, engine, options, with_raw, endpoint, ip, t0,
                req_desc: str = "", user_agent: str = "") -> OCRResult:
     rid = uuid.uuid4().hex
+    # 单 Key 并发限制：达到上限后不调用上游。放在解析图片之后、发起上游请求之前。
+    max_concurrency = effective_max_concurrency(key)
+    if not key_concurrency.try_acquire(key.id, rid, max_concurrency):
+        record(
+            db, service="ocr", endpoint=endpoint, key=key,
+            status="error", latency_ms=int((time.monotonic() - t0) * 1000),
+            error_message=f"并发请求已达上限（{max_concurrency}）", ip=ip,
+            error_type="concurrency_limit", request_body=req_desc,
+        )
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"当前 API Key 的并发请求已达上限（{max_concurrency}），请等待部分请求完成后重试",
+        )
     live.start(rid, service="ocr", endpoint=endpoint, key_id=key.id, key_name=key.name,
                client_ip=ip, user_agent=user_agent)
     try:
@@ -153,6 +167,7 @@ async def _run(db, key, image, mime, provider, engine, options, with_raw, endpoi
         )
     finally:
         live.finish(rid)
+        key_concurrency.release(key.id, rid)
 
 
 async def _run_inner(db, key, image, mime, provider, engine, options, with_raw,

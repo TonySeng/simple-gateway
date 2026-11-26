@@ -64,6 +64,8 @@ def ensure_extra_columns() -> None:
             ("channels", "TEXT" if _is_sqlite else "JSON"),
             # 绑定的安全审查规则；NULL = 继承默认，'' = 关闭
             ("safety_policy_id", "VARCHAR(32)"),
+            # 单 Key 最大并发数；0=继承全局配置/不限（存量 Key 保持不限行为）
+            ("max_concurrency", "INTEGER DEFAULT 0"),
         ],
         "providers": [
             # 上游超时（秒）；NULL = 使用全局默认

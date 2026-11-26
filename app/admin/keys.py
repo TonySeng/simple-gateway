@@ -49,6 +49,7 @@ def _to_read(k: ApiKey, plaintext: Optional[str] = None) -> ApiKeyRead:
         used_tokens=k.used_tokens,
         used_cost=k.used_cost,
         rate_limit=k.rate_limit,
+        max_concurrency=getattr(k, "max_concurrency", 0) or 0,
         expires_at=k.expires_at,
         comment=k.comment,
         created_at=k.created_at,
@@ -151,6 +152,7 @@ def create_key(
         quota_tokens=payload.quota_tokens,
         quota_cost=payload.quota_cost,
         rate_limit=payload.rate_limit,
+        max_concurrency=payload.max_concurrency,
         expires_at=_naive_utc(payload.expires_at),
         comment=payload.comment,
     )

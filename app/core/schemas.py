@@ -110,6 +110,7 @@ class ApiKeyCreate(BaseModel):
     quota_tokens: int = 0
     quota_cost: float = 0.0
     rate_limit: int = 0
+    max_concurrency: int = Field(0, ge=0)  # 单 Key 最大并发数，0=继承全局/不限
     expires_at: Optional[datetime] = None
     comment: Optional[str] = None
 
@@ -126,6 +127,7 @@ class ApiKeyUpdate(BaseModel):
     quota_tokens: Optional[int] = None
     quota_cost: Optional[float] = None
     rate_limit: Optional[int] = None
+    max_concurrency: Optional[int] = Field(None, ge=0)
     expires_at: Optional[datetime] = None
     comment: Optional[str] = None
 
@@ -147,6 +149,7 @@ class ApiKeyRead(BaseModel):
     used_tokens: int = 0
     used_cost: float = 0.0
     rate_limit: int = 0
+    max_concurrency: int = 0
     expires_at: Optional[datetime] = None
     comment: Optional[str] = None
     created_at: datetime

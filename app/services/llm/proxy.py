@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.concurrency import effective_max_concurrency, key_concurrency
 from app.core.db import SessionLocal
 from app.core.live import live
 from app.core.models import ApiKey, Model, Provider, key_channel
@@ -50,6 +51,7 @@ ERROR_UPSTREAM_NON_JSON = "upstream_non_json"    # 2xx 但响应体不是 JSON
 ERROR_UPSTREAM_STREAM = "upstream_stream_error"  # 流内返回 error 事件
 ERROR_STREAM_INTERRUPTED = "stream_interrupted"  # 流传输中途断开
 ERROR_EMPTY_STREAM = "empty_stream"              # 上游 200 但一个 data 事件都没有
+ERROR_CONCURRENCY_LIMIT = "concurrency_limit"    # 单 Key 并发数达到上限（未调用上游）
 ERROR_INTERNAL = "internal_error"                # 网关自身异常
 
 # 上游响应体脱敏（实现见 app.core.logbody，OCR 侧共用）
@@ -266,6 +268,10 @@ def _fail(
     # 任何提前返回（上游非 2xx、连接失败、参数非法…）都不会留下僵死条目。
     # 与 handle_chat 的 finally、wrapped() 的 finally 重复调用也没关系（finish 幂等）。
     live.finish(request_id)
+    # 同步释放并发槽位（幂等）：失败路径可能发生在 acquire 之前（如参数非法/模型不存在），
+    # 那时 token 不在表里，release 是 no-op；acquire 之后失败则在此及时释放。
+    if key is not None:
+        key_concurrency.release(key.id, request_id)
     # error_type 一并透出：客户端据此区分 upstream_status / upstream_timeout /
     # upstream_connect 等归因，不必登录后台猜。未分类时退回通用错误类型。
     return _err(
@@ -470,6 +476,21 @@ async def handle_chat(protocol: str, api_key: ApiKey, request: Request, client_i
             max_tokens_cap=_cfg.get("max_tokens_cap"),
         )
 
+        # ---- 单 Key 并发限制：达到上限后不再调用上游，直接返回友好限流提示 ----
+        # 放在安全审查之后、真正请求上游之前：被审查拦截的请求不算「等待上游响应」。
+        _max_concurrency = effective_max_concurrency(api_key)
+        if not key_concurrency.try_acquire(api_key.id, rid, _max_concurrency):
+            return fail(
+                error_type=ERROR_CONCURRENCY_LIMIT,
+                message=(
+                    f"当前 API Key 的并发请求已达上限（{_max_concurrency}），"
+                    "请等待部分请求完成后重试"
+                ),
+                status_code=429,
+                provider=provider, model=model, model_name=model_name,
+                latency_ms=int((time.time() - start) * 1000),
+            )
+
         url, headers, outbound_body, upstream_protocol = dispatch.build_outbound(
             provider, model, internal
         )
@@ -510,6 +531,8 @@ async def handle_chat(protocol: str, api_key: ApiKey, request: Request, client_i
     finally:
         if not stream_handed_off:
             live.finish(rid)
+            # 非流式/失败/异常路径释放并发槽位；流式成功已交接给 wrapped() 的 finally。
+            key_concurrency.release(api_key.id, rid)
         db.close()
 
 
@@ -1110,6 +1133,8 @@ async def _stream_response(
         finally:
             # 客户端提前断开时也要把实时条目摘掉，否则会一直挂在「实时监控」里
             live.finish(request_id)
+            # 流式请求在交接后由这里负责释放并发槽位（正常结束/断开/异常均覆盖）
+            key_concurrency.release(api_key.id, request_id)
 
     return StreamingResponse(
         wrapped(),

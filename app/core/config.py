@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     api_key_prefix: str = "sg_sk_"
     api_key_length: int = 40
     default_rate_limit_per_min: int = 0  # 新建 Key 的默认速率上限，0=不限
+    # 单个 API Key 的最大并发数（正在等待上游响应的请求数）。0=不限；
+    # 单个 Key 可用其 max_concurrency 字段覆盖此全局默认值。
+    api_key_max_concurrency: int = 0
 
     # ---------- 转发 ----------
     proxy_timeout: float = 120.0

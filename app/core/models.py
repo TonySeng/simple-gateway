@@ -143,6 +143,8 @@ class ApiKey(Base):
     used_cost: Mapped[float] = mapped_column(Float, default=0.0)
 
     rate_limit: Mapped[int] = mapped_column(Integer, default=0)  # 次/分钟，0=不限
+    # 单 Key 最大并发数（正在等待上游响应的请求数）。0=继承全局配置/不限
+    max_concurrency: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, server_default=func.now())

@@ -1010,10 +1010,14 @@
         <div class="form-row">${keyChannelHtml(k, App.services, providers)}</div>
         <div class="section-title">安全审查</div>
         ${keySafetyHtml(k, policies)}
-        <div class="section-title">配额（0 = 不限）</div>
+        <div class="section-title">配额与限流（0 = 不限）</div>
         <div class="form-row">
           <div class="field"><span>请求次数上限</span><input name="quota_requests" type="number" value="${k ? k.quota_requests : 0}" /></div>
           <div class="field"><span>速率限制（次/分钟）</span><input name="rate_limit" type="number" value="${k ? k.rate_limit : 0}" /></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><span>并发限制（同时等待上游的请求数）</span><input name="max_concurrency" type="number" min="0" value="${k ? (k.max_concurrency ?? 0) : 0}" /></div>
+          <div class="field"><span class="muted small">0 = 继承全局配置（默认不限）；达到上限的新请求将直接返回 429，不调用上游</span></div>
         </div>
         <div class="form-row">
           <div class="field"><span>tokens 上限</span><input name="quota_tokens" type="number" value="${k ? k.quota_tokens : 0}" /></div>
@@ -1056,6 +1060,7 @@
         quota_tokens: Number(val("quota_tokens") || 0),
         quota_cost: Number(val("quota_cost") || 0),
         rate_limit: Number(val("rate_limit") || 0),
+        max_concurrency: Math.max(0, Number(val("max_concurrency") || 0)),
         comment: val("comment").trim() || null,
       };
       const exp = val("expires_at");
@@ -1126,7 +1131,7 @@
       return `<tr>
         <td>${esc(k.name)}<div class="small muted mono">${esc(k.key_prefix)}…</div>${safetyTag}</td>
         <td>${(k.allowed_services || []).map((s) => `<span class="tag svc">${s === "*" ? "全部" : esc(svcLabel(s))}</span>`).join(" ")} ${channelTags}</td>
-        <td class="small">${esc(quota)}</td>
+        <td class="small">${esc(quota)}${k.max_concurrency ? `<div class="muted">并发 ≤ ${num(k.max_concurrency)}</div>` : ""}</td>
         <td class="small">${num(k.used_requests)} 次<div class="muted">${num(k.used_tokens)} tok · ${money(k.used_cost)}</div>
           ${k.quota_requests ? `<div class="meter"><i style="width:${usedPct}%"></i></div>` : ""}</td>
         <td>${k.status === "active" ? '<span class="tag ok">启用</span>' : '<span class="tag err">停用</span>'}</td>
