@@ -21,10 +21,11 @@ from app.core.db import SessionLocal
 from app.core.live import live
 from app.core.models import ApiKey, Model, Provider, key_channel
 from app.core.logbody import BodyCollector, dump_body, limit_text, redact
-from app.core.providers import httpx_timeout, resolve_timeout
+from app.core.providers import httpx_timeout, provider_settings, resolve_timeout
 from app.core.usage import record
 from app.services.llm import dispatch
 from app.services.llm import safety
+from app.services.llm.normalize import normalize_internal_request
 from app.services.llm.translators import (
     anthropic_event_to_openai,
     anthropic_to_openai_request,
@@ -458,6 +459,16 @@ async def handle_chat(protocol: str, api_key: ApiKey, request: Request, client_i
                     return _safety_response(
                         protocol, model.name, reply, rid, stream, safety.RESULT_ERROR,
                     )
+
+        # ---- 出站参数归一化：兼容 agent（Claude Code 等）的 Anthropic 专有参数 ----
+        # thinking / 超大 max_tokens 原样透传给 OpenAI 兼容上游会触发 400
+        # （见 app/services/llm/normalize.py 顶部说明）。在 build_outbound 之前统一收敛。
+        _cfg = provider_settings(provider)
+        internal = normalize_internal_request(
+            internal,
+            outbound_anthropic=dispatch.is_anthropic_outbound(provider),
+            max_tokens_cap=_cfg.get("max_tokens_cap"),
+        )
 
         url, headers, outbound_body, upstream_protocol = dispatch.build_outbound(
             provider, model, internal
